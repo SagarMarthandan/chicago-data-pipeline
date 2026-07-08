@@ -1,0 +1,96 @@
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Docker
+docker-compose.override.yml
+
+# Data files (don't commit raw data)
+*.csv
+*.parquet
+*.json.gz
+*.tar.gz
+data/
+raw_data/
+downloads/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# DBT
+dbt/target/
+dbt/dbt.log
+dbt/.user.yml
+
+# Airflow
+airflow/airflow.db
+airflow/airflow.cfg
+airflow/logs/
+airflow/dags/__pycache__/
+
+# Spark
+spark-warehouse/
+derby.log
+metastore_db/
+
+# Kafka
+kafka/data/
+kafka-logs/
+
+# Postgres
+postgres-data/
+pgdata/
+
+# Grafana
+grafana/data/
+
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/*.tfvars
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS
+Thumbs.db
+
+# Jupyter (if used for exploration)
+.ipynb_checkpoints/
+*.ipynb
+
+# Logs
+*.log
+logs/
