@@ -1,7 +1,7 @@
 # AGENTS.md — Chicago Crime + Divvy Pipeline
 
 > **Read this file before doing anything in this repo.**
-> If you are an AI assistant (Devin, Claude, Copilot, etc.), follow `docs/learning-protocol.md` for how to interact with me. Read `changelog.md` and `docs/knowledge.md` to learn from past mistakes and reference accumulated knowledge.
+> If you are an AI assistant (Devin, Claude, Copilot, etc.), follow `docs/learning-protocol.md` for how to interact with me. Read `changelog.md` for past errors and fixes, `docs/knowledge.md` for reference material, and `docs/operations-performed.md` for a record of what has been built and why.
 
 ## Project
 
@@ -56,6 +56,7 @@ If I ask you to help with Phase 2 while Phase 1 isn't done, refuse and remind me
 8. **If I'm about to do something that will cause a known mistake (see plan's "mistakes to expect" section), let me make it — then help me understand why.**
 9. **Read `changelog.md` before starting work** — it logs past errors and fixes. Check it to avoid repeating mistakes. Update it when we fix a new error.
 10. **Read `docs/knowledge.md` for reference** — it has useful commands, syntax, and explanations. Update it when you learn something worth remembering.
+11. **Update `docs/operations-performed.md` after structural changes** — record what files/structures were created and why. This is the audit trail of what exists in the repo.
 
 ## Repo Structure (target)
 
@@ -73,8 +74,9 @@ chicago-data-pipeline/      ← repo root (you are here)
 ├── grafana/
 ├── terraform/             ← Phase 4 only
 └── docs/
-    ├── knowledge.md        ← reference commands, syntax, explanations
+    ├── knowledge.md               ← reference commands, syntax, explanations
     ├── learning-protocol.md
+    ├── operations-performed.md    ← audit trail of what was built and why
     └── conventions/
         ├── docker.md
         ├── dbt.md

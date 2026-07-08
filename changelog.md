@@ -34,4 +34,31 @@ A running log of changes, errors, and fixes throughout the project. Use this to 
 
 ---
 
+## 2026-07-08 — Documentation & Repo Finalization
+
+### Changes
+- Created `changelog.md` (repo root) — error/fix/lesson log, pre-populated with 5 planning-phase bugs
+- Created `docs/knowledge.md` — reference lookup by tool (WSL, Docker, Postgres, DBT, Spark, Kafka, Airflow, Git, data sources)
+- Created `docs/operations-performed.md` — structural audit trail of what was built and why
+- Created `README.md` with 3 Mermaid diagrams (architecture, pipeline flow, roadmap)
+- Updated `AGENTS.md` — added rules 9–11 (read changelog, read knowledge, update operations-performed), updated header note and repo structure to reference all three docs
+- Updated `docs/conventions/airflow.md` — DockerOperator network/volume names → `chicago-data-pipeline_*` with `COMPOSE_PROJECT_NAME` reference
+- Updated `docs/conventions/docker.md` — added `COMPOSE_PROJECT_NAME=chicago-data-pipeline` to `.env` example and networking section; updated WSL path to `~/chicago-data-pipeline`
+- Fixed missing ` ``` ` code fence in `AGENTS.md` repo structure block (lost during edit)
+
+### Errors & Fixes
+
+| # | Error | Root Cause | Fix | Lesson |
+|---|---|---|---|---|
+| 6 | `AGENTS.md` repo structure block lost opening ` ``` ` fence | Edit replaced the line containing the fence without re-adding it | Re-inserted ` ``` ` before the tree | When editing around code fences, verify both opening and closing fences survive the edit. Read after editing. |
+| 7 | README.md Mermaid diagrams didn't persist after incremental edits | Edits applied but file state was inconsistent | Rewrote entire file with `write` tool in one pass | For multi-section files with complex content, use `write` (full overwrite) instead of chained `edit` calls. Verify with `grep -c mermaid` after. |
+| 8 | Bash commands failed with "Working directory does not exist" after folder rename | Tool cwd was cached to old `chicago-divvy-DE-project` path | Prefixed commands with `cd ~/chicago-data-pipeline && ...` | Same lesson as #5 — always verify cwd after folder renames. Use absolute paths. |
+
+### Lessons Summary
+- **Edit tool pitfalls:** Code fences and structural elements can be lost during `SWAP` edits. Always read after editing to verify.
+- **Write vs edit:** For complex multi-section files, `write` (full overwrite) is more reliable than chained `edit` calls.
+- **Three-doc system:** `changelog.md` (errors), `docs/knowledge.md` (reference), `docs/operations-performed.md` (audit trail) — each has a distinct purpose, don't merge them.
+
+---
+
 <!-- Append new entries below. Keep the format consistent. -->
