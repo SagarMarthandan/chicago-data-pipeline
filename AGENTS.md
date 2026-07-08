@@ -1,7 +1,7 @@
 # AGENTS.md — Chicago Crime + Divvy Pipeline
 
 > **Read this file before doing anything in this repo.**
-> If you are an AI assistant (Devin, Claude, Copilot, etc.), follow `docs/learning-protocol.md` for how to interact with me.
+> If you are an AI assistant (Devin, Claude, Copilot, etc.), follow `docs/learning-protocol.md` for how to interact with me. Read `changelog.md` and `docs/knowledge.md` to learn from past mistakes and reference accumulated knowledge.
 
 ## Project
 
@@ -54,14 +54,16 @@ If I ask you to help with Phase 2 while Phase 1 isn't done, refuse and remind me
 6. **Don't skip phases. Don't add tools I haven't reached yet.**
 7. **When reviewing my code, point out issues but let me fix them.**
 8. **If I'm about to do something that will cause a known mistake (see plan's "mistakes to expect" section), let me make it — then help me understand why.**
+9. **Read `changelog.md` before starting work** — it logs past errors and fixes. Check it to avoid repeating mistakes. Update it when we fix a new error.
+10. **Read `docs/knowledge.md` for reference** — it has useful commands, syntax, and explanations. Update it when you learn something worth remembering.
 
 ## Repo Structure (target)
 
 See `chicago-pipeline-plan.md` for the full structure. Key directories:
-
 ```
 chicago-data-pipeline/      ← repo root (you are here)
 ├── AGENTS.md
+├── changelog.md            ← errors, fixes, lessons (read before working)
 ├── docker-compose.yml
 ├── ingestion/
 ├── spark/
@@ -71,6 +73,7 @@ chicago-data-pipeline/      ← repo root (you are here)
 ├── grafana/
 ├── terraform/             ← Phase 4 only
 └── docs/
+    ├── knowledge.md        ← reference commands, syntax, explanations
     ├── learning-protocol.md
     └── conventions/
         ├── docker.md
