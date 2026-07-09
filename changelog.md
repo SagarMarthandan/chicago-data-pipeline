@@ -147,4 +147,80 @@ A running log of changes, errors, and fixes throughout the project. Use this to 
 
 ---
 
+## 2026-07-09 — Migrated from uv venv to uv init (project mode)
+
+### Changes
+- Removed `.venv/` and `requirements.txt` (old uv venv approach)
+- Ran `uv init --bare --name chicago-data-pipeline` — created `pyproject.toml`
+- Ran `uv add requests sodapy dbt-core dbt-postgres python-dotenv psycopg2-binary` — populated dependencies + generated `uv.lock`
+- Verified: all imports work, `dbt --version` → 1.11.12
+
+### Key Decisions
+
+| Decision | Choice | Why |
+|---|---|---|
+| uv venv vs uv init | `uv init` (project mode) | Lockfile (`uv.lock`) guarantees reproducible installs. `pyproject.toml` is the modern Python standard (PEP 621). `uv add` is cleaner than manually editing `requirements.txt`. |
+| Docker + uv | Independent — containers keep using pip | uv manages host Python only. Containers have their own Python. Can switch containers to uv later if build speed becomes a bottleneck. |
+
+### Lesson
+- **Lockfile vs requirements.txt** — `requirements.txt` resolves versions at install time (can vary between machines). `uv.lock` pins exact versions + hashes, guaranteeing identical installs everywhere. For a project meant to be documented and reproducible, the lockfile is the right choice.
+- **Docker and uv are independent** — uv on the host doesn't affect containers. Each container has its own Python managed by its Dockerfile. You CAN use uv inside Docker (faster builds), but it's optional.
+
+---
+
+## 2026-07-09 — uv pip install in Airflow Dockerfile
+
+### Changes
+- Updated `airflow/Dockerfile` — replaced `pip install` with `uv pip install --system`
+- Added `COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv` — multi-stage copy of uv binary
+
+### Key Decisions
+
+| Decision | Choice | Why |
+|---|---|---|
+| uv in Docker | `uv pip install --system` (not `uv sync`) | Host and containers need different packages. `uv sync` reads root `uv.lock` (host deps) — would install dbt-core, sodapy etc. in Airflow container unnecessarily. `uv pip install -r airflow/requirements.txt` installs only container-specific deps. |
+| How to install uv in container | `COPY --from=ghcr.io/astral-sh/uv:latest` | Multi-stage copy — pulls just the binary, no install script, no pip install uv. Cleaner and more reliable than curl \| sh. |
+| `--system` flag | Used | Installs into container's system Python. No venv needed inside containers — they're already isolated. |
+
+### Lesson
+- **Multi-stage COPY for tools** — `COPY --from=<image>:<tag> /path/to/binary /local/path` copies a single binary from another image without installing it. Common pattern for adding tools (uv, docker CLI, etc.) to containers.
+
+---
+## 2026-07-09 — Upgraded Airflow 2.8.4 → 3.0.0
+
+### Changes
+- Updated `airflow/Dockerfile` — `apache/airflow:2.8.4-python3.11` → `apache/airflow:3.0.0-python3.11`
+- Updated `docker-compose.yml` — removed `airflow users create` from airflow-init, added SimpleAuthManager env vars + passwords.json mount
+- Updated `.env.example` — removed `AIRFLOW_WWW_USER`/`AIRFLOW_WWW_PASSWORD`, added `AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS` + `AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE`
+- Created `airflow/passwords.json` — JSON mapping of username → password for SimpleAuthManager
+
+### Why Airflow 2.x is EOL
+Airflow 2.x reached end-of-life in April 2026. The final 2.x release was 2.11.2 (March 2026). No more security patches or bug fixes. Airflow 3.0.0 (April 2025) is the first stable 3.x release with 15 months of production hardening.
+
+### Breaking Changes from 2.x → 3.0
+
+| Change | 2.x | 3.0 | Impact |
+|---|---|---|---|
+| Authentication | Flask-AppBuilder (FAB) | SimpleAuthManager (new default) | `airflow users create` CLI is GONE. Users defined via env vars + passwords.json |
+| User creation | `airflow users create --username ... --password ...` | `AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS=admin:admin` + passwords.json | No CLI user creation. Users defined in config. |
+| Passwords | Database-backed | JSON file (`passwords.json`) | Mount file into container, define username→password mapping |
+| Roles | Created via CLI | Predefined: viewer, user, op, admin | Assigned in `SIMPLE_AUTH_MANAGER_USERS` env var |
+| `airflow db migrate` | Works | Still works | No change |
+| `AIRFLOW__DATABASE__SQL_ALCHEMY_CONN` | Works | Still works (core components only) | No change for our setup |
+
+### Key Decisions
+
+| Decision | Choice | Why |
+|---|---|---|
+| Airflow version | 3.0.0 (not 3.3.0) | 3.0.0 has 15 months of production hardening. 3.3.0 released 3 days ago — too new for stability. |
+| Auth manager | SimpleAuthManager (default) | Simpler than FAB for dev. No database-backed users. If we need `airflow users create` later, can install `apache-airflow-providers-fab` and switch to FabAuthManager. |
+| Passwords file | `airflow/passwords.json` mounted into container | Static, predictable password (`admin`/`admin`). SimpleAuthManager auto-generates passwords if file doesn't exist — mounting gives us control. |
+
+### Lessons
+- **Always check version status before pinning** — Airflow 2.8.4 was EOL. The plan was written when 2.x was current. Version currency matters.
+- **Airflow 3.0 is a major breaking change** — not a drop-in upgrade. Auth, user management, and some config paths changed. Always read migration docs.
+- **SimpleAuthManager is dev-oriented** — it's the default for 3.0 but designed for development/testing. For production, FabAuthManager (via `apache-airflow-providers-fab`) restores database-backed auth.
+
+---
+
 <!-- Append new entries below. Keep the format consistent. -->

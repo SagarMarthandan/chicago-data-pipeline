@@ -36,15 +36,23 @@ x-airflow-common: &airflow-common
     # Don't load Airflow's example DAGs — they clutter the UI
     AIRFLOW__CORE__LOAD_EXAMPLES: ${AIRFLOW__CORE__LOAD_EXAMPLES}
 
-    # New DAGs start unpaued (convenient for dev; in prod you'd want True)
+    # New DAGs start unpaused (convenient for dev; in prod you'd want True)
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "False"
 
     # Webserver port (inside the container)
     AIRFLOW__WEBSERVER__WEB_SERVER_PORT: ${AIRFLOW__WEBSERVER__WEB_SERVER_PORT}
 
-    # Admin UI credentials — used by airflow-init to create the user
-    _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_WWW_USER}
-    _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_WWW_PASSWORD}
+    # ============ Airflow 3.0 Authentication ============
+    # Airflow 3.0 replaces Flask-AppBuilder (FAB) with SimpleAuthManager.
+    # Breaking change from 2.x: `airflow users create` CLI is GONE.
+    # Users are defined via env vars + passwords.json file.
+    #
+    # SIMPLE_AUTH_MANAGER_USERS — comma-separated username:role pairs
+    # Roles: viewer, user, op, admin
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: ${AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS}
+
+    # Passwords file — JSON mapping of username → password
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: ${AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE}
 
   volumes:
     # DAG files — bind mount so edits on host appear immediately in container
@@ -59,6 +67,10 @@ x-airflow-common: &airflow-common
     # Docker socket — lets DockerOperator spawn containers from inside Airflow
     # Without this, DockerOperator can't talk to the Docker daemon
     - /var/run/docker.sock:/var/run/docker.sock
+
+    # Airflow 3.0 SimpleAuthManager — passwords file
+    # JSON mapping of username → password (e.g., {"admin": "admin"})
+    - ./airflow/passwords.json:/opt/airflow/config/passwords.json
 
 
 services:
@@ -144,13 +156,16 @@ services:
     volumes:
       - ./spark/jobs:/opt/bitnami/spark/jobs
 
-
-  # ============ Airflow ============
+  # ============ Airflow 3.0 ============
   # Three services from one image (airflow/Dockerfile):
   #
-  #   airflow-init      — one-shot: runs db migrations + creates admin user, then exits
+  #   airflow-init      — one-shot: runs db migrations, then exits
   #   airflow-webserver — serves the UI (port 8080)
   #   airflow-scheduler — schedules and executes tasks
+  #
+  # Airflow 3.0 change: no `airflow users create` command.
+  # Users are defined via SimpleAuthManager env vars + passwords.json.
+  # airflow-init only runs `airflow db migrate` now.
   #
   # webserver + scheduler wait for airflow-init to complete successfully
   # before starting (depends_on: condition: service_completed_successfully).
@@ -160,19 +175,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    # One-shot command: migrate metadata DB, then create admin user
-    # $$ escapes $ so Compose doesn't interpolate — bash reads from env instead
-    # || true on user create: if user already exists, don't fail the init
+    # One-shot command: migrate metadata DB only.
+    # In Airflow 2.x, this also created the admin user via `airflow users create`.
+    # In Airflow 3.0, users are defined via SimpleAuthManager env vars + passwords.json.
     command: >
       bash -c "
-      airflow db migrate &&
-      (airflow users create
-        --username $${_AIRFLOW_WWW_USER_USERNAME}
-        --password $${_AIRFLOW_WWW_USER_PASSWORD}
-        --firstname Admin
-        --lastname User
-        --role Admin
-        --email admin@example.com || true)
+      airflow db migrate
       "
 
   airflow-webserver:

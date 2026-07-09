@@ -27,6 +27,88 @@ Devin IDE caches the file tree on open and doesn't watch for external changes. I
 
 ---
 
+## uv (Python Package Manager)
+
+### What is uv?
+`uv` is a fast Python package manager by Astral. It handles virtual environment creation, dependency resolution, and package installation — 10-100x faster than pip. It's written in Rust.
+
+### Host vs Container Python
+This project has TWO Python environments:
+
+| Where | Environment | Managed by | Purpose |
+|---|---|---|---|
+| Host (WSL) | `.venv/` (uv) | `pyproject.toml` + `uv.lock` | Running ingestion scripts, DBT dev, ad-hoc queries |
+| Containers | Container Python | `airflow/requirements.txt`, `spark/Dockerfile` | Running services inside Docker |
+
+The host venv is for **development and testing**. Containers have their own isolated Python.
+
+### Docker + uv Relationship
+uv manages host Python. Docker images have their own Python inside the container. They're independent — but we use uv **inside** Docker too, for faster builds.
+
+```
+Host (WSL)                    Containers
+┌──────────────┐              ┌──────────────────────┐
+│ uv + .venv   │              │ Container Python     │
+│ pyproject.toml│   independent│ + uv (for fast pip)  │
+│ uv.lock      │              │ + requirements.txt   │
+└──────────────┘              └──────────────────────┘
+```
+
+**How uv is used in Docker:**
+- `COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv` — copies the uv binary from the official image (multi-stage copy, no install script needed)
+- `uv pip install --system --no-cache-dir -r requirements.txt` — installs into the container's system Python
+
+**Why `uv pip install --system` and NOT `uv sync`:**
+- The host and containers need DIFFERENT packages. `uv sync` reads the root `uv.lock` which has host deps (dbt-core, sodapy, etc.) — not what the Airflow container needs.
+- `uv pip install --system -r airflow/requirements.txt` installs only container-specific deps, using uv's fast resolver.
+- `--system` installs into the container's system Python (no venv needed inside containers).
+
+### Setup (uv init — project mode)
+```bash
+# One-time: initialize project (creates pyproject.toml)
+uv init --bare --name chicago-data-pipeline
+
+# Add dependencies (updates pyproject.toml + uv.lock + installs)
+uv add requests sodapy dbt-core dbt-postgres python-dotenv psycopg2-binary
+
+# Each new terminal: activate the venv
+source .venv/bin/activate
+
+# Recreate venv from lockfile (e.g., after cloning on a new machine)
+uv sync
+```
+
+### Common Commands
+```bash
+uv add <package>              # add a dependency (updates pyproject.toml + uv.lock)
+uv remove <package>           # remove a dependency
+uv sync                       # install exact versions from uv.lock (reproducible)
+uv pip list                   # list installed packages
+uv lock --upgrade             # update all packages to latest compatible versions
+deactivate                    # exit venv
+```
+
+### Key Files
+| File | Committed? | Purpose |
+|---|---|---|
+| `pyproject.toml` | Yes | Project metadata + dependency declarations (human-edited) |
+| `uv.lock` | Yes | Exact versions + hashes for reproducible installs (machine-generated) |
+| `.venv/` | No (gitignored) | The actual virtual environment with installed packages |
+
+### uv venv vs uv init
+| | `uv venv` (simple) | `uv init` (project mode) |
+|---|---|---|
+| Config file | `requirements.txt` | `pyproject.toml` |
+| Lockfile | None | `uv.lock` (exact versions pinned) |
+| Add dependency | Edit `requirements.txt` manually | `uv add <package>` (auto-updates toml + lock) |
+| Reproducibility | Versions resolve at install time (can vary) | Lockfile guarantees identical installs |
+| Install command | `uv pip install -r requirements.txt` | `uv sync` (reads lockfile) |
+| Standard | Legacy (pip-compatible) | Modern Python standard (PEP 621) |
+
+This project uses `uv init` (project mode) for reproducibility and modern tooling.
+
+---
+
 ## Docker Compose
 
 ### Project Names
@@ -322,6 +404,26 @@ airflow tasks test crime_batch download_crime 2024-01-15
 | `SequentialExecutor` | One task at a time, single thread | Dev/testing only | None |
 | `LocalExecutor` | Parallel tasks on one machine | Phase 1 — good fit | None (uses metadata DB) |
 | `CeleryExecutor` | Distributes tasks across worker machines | Production / heavy workloads | Redis or RabbitMQ + Celery workers |
+
+### Airflow 3.0 Authentication (SimpleAuthManager)
+Airflow 3.0 replaces Flask-AppBuilder (FAB) with SimpleAuthManager as the default auth manager. This is a **breaking change** from 2.x:
+
+| Concept | Airflow 2.x (FAB) | Airflow 3.0 (SimpleAuthManager) |
+|---|---|---|
+| Create user | `airflow users create --username ... --password ...` | **GONE** — no CLI user creation |
+| Define users | Database-backed | Env var: `AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS=admin:admin,viewer:user1` |
+| Passwords | Database-backed | JSON file: `AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE=/path/to/passwords.json` |
+| Roles | Created via CLI | Predefined: `viewer`, `user`, `op`, `admin` (assigned in env var) |
+| Passwords file format | N/A | `{"admin": "admin", "user1": "pass1"}` |
+
+**Switching back to FAB auth** (if you need database-backed users):
+```bash
+# In airflow/requirements.txt:
+apache-airflow-providers-fab
+
+# In .env:
+AIRFLOW__CORE__AUTH_MANAGER=airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+```
 
 ### Metadata Database
 Airflow needs its OWN database to track DAG runs, task states, scheduling info, and logs. This is NOT your analytics data. If you point Airflow at your warehouse DB, it creates tables like `task_instance`, `dag_run`, `xcom` and pollutes your analytics schema. Always use a separate database (can be in the same Postgres instance, just a different DB + user).

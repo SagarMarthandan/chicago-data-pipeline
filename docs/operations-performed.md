@@ -76,7 +76,7 @@ A chronological log of operations, files created, and structural changes made to
   - `COMPOSE_PROJECT_NAME=chicago-data-pipeline` — fixed project name for predictable Docker network/volume names
   - Postgres warehouse credentials (`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_PORT`) — for `chicago_analytics` database
   - Airflow metadata DB credentials (`AIRFLOW_DB_USER`, `AIRFLOW_DB_PASSWORD`, `AIRFLOW_DB_NAME`) — separate database within same Postgres instance for Airflow internal state
-  - Airflow config (`AIRFLOW__CORE__EXECUTOR=LocalExecutor`, `AIRFLOW__CORE__LOAD_EXAMPLES=False`, webserver port, UI creds)
+  - Airflow 3.0 config (`AIRFLOW__CORE__EXECUTOR=LocalExecutor`, `AIRFLOW__CORE__LOAD_EXAMPLES=False`, webserver port, SimpleAuthManager users + passwords file path)
   - `SOCRATA_APP_TOKEN` — placeholder, empty until ingestion script (Phase 1.2)
 
 ### Key Decisions
@@ -95,15 +95,25 @@ A chronological log of operations, files created, and structural changes made to
   - `airflow_metadata` database owned by `airflow` — uses `SELECT ... \gexec` trick because `CREATE DATABASE` can't run inside a transaction
 - Grants: `chicago` user gets full privileges on `raw`, `staging`, and `mart` schemas; `airflow` user gets full privileges on `airflow_metadata` database
 - Values hardcoded (not env vars) because SQL files can't read `.env`. Values match `.env.example`.
-### `docker-compose.yml` (created)
+### `docker-compose.yml` (created, updated for Airflow 3.0)
 - 6 services: postgres, spark-master, spark-worker, airflow-init, airflow-webserver, airflow-scheduler
 - Uses YAML anchor `x-airflow-common` to share env vars + volumes across 3 Airflow services
 - All env vars interpolated from `.env` (e.g., `${POSTGRES_USER}`, `${AIRFLOW_DB_PASSWORD}`)
+- Airflow 3.0 changes: SimpleAuthManager env vars added, `airflow/passwords.json` mounted, `airflow users create` removed from airflow-init (only `airflow db migrate` now)
 
-### `airflow/Dockerfile` (created)
-- Based on `apache/airflow:2.8.4-python3.11`
+### `airflow/Dockerfile` (created, updated to Airflow 3.0)
+- Based on `apache/airflow:3.0.0-python3.11` (upgraded from 2.8.4 — 2.x is EOL since April 2026)
 - Installs `docker.io` (Docker CLI) for DockerOperator — official image doesn't include it
-- Installs Airflow providers from `airflow/requirements.txt`: postgres, docker
+- Copies uv binary from `ghcr.io/astral-sh/uv:latest` via multi-stage COPY (no install script needed)
+- Installs Airflow providers from `airflow/requirements.txt` using `uv pip install --system` (10-100x faster than pip)
+- Uses `--system` flag (installs into container's system Python, no venv needed in containers)
+- Uses `uv pip install` not `uv sync` because host and containers need different packages
+
+### `airflow/passwords.json` (created)
+- Airflow 3.0 SimpleAuthManager passwords file
+- JSON mapping of username → password: `{"admin": "admin"}`
+- Mounted into container at `/opt/airflow/config/passwords.json` via docker-compose.yml
+- Replaces Airflow 2.x's `airflow users create` CLI command (removed in 3.0)
 
 ### `airflow/requirements.txt` (created)
 - `apache-airflow-providers-postgres` — PostgresHook, SqlSensor
@@ -118,12 +128,45 @@ A chronological log of operations, files created, and structural changes made to
 - `airflow/dags/.gitkeep` — ensures dags/ directory exists in git
 - `spark/jobs/.gitkeep` — ensures jobs/ directory exists in git
 
+### uv Virtual Environment (created)
+- Initialized with `uv init --bare --name chicago-data-pipeline` — project mode with `pyproject.toml` + `uv.lock`
+- Dependencies added via `uv add`: requests, sodapy, dbt-core, dbt-postgres, python-dotenv, psycopg2-binary
+- `pyproject.toml` — project metadata + dependency declarations (committed to git)
+- `uv.lock` — exact versions + hashes for reproducible installs (committed to git)
+- Note: Docker containers have their own Python (managed by Dockerfiles). Host uses uv init (project mode). Airflow container uses uv pip install --system for fast installs.
+- Activate with `source .venv/bin/activate` in each new terminal
+- Recreate on another machine with `uv sync` (reads lockfile)
+- Note: Docker containers have their own Python (managed by Dockerfiles). uv is host-only.
+
 ### Pending
 - Copy `.env.example` to `.env` and fill in values
 - `docker compose build` — build custom Airflow + Spark images
 - `docker compose up -d` — start all services
-- Verify: Postgres schemas exist, Airflow UI loads, Spark master UI loads
+- Verify: Postgres schemas exist, Airflow UI loads (admin/admin via SimpleAuthManager), Spark master UI loads
 
 ---
 
-<!-- Append new entries below. Record what you created, what it does, and why. -->
+## 2026-07-09 — Airflow 2.8.4 → 3.0.0 Upgrade
+
+### Why
+Airflow 2.x reached end-of-life in April 2026. No more security patches or bug fixes. Airflow 3.0.0 (April 2025) is the first stable 3.x release with 15 months of production hardening. Chose 3.0.0 over 3.3.0 (released July 6, 2026 — only 3 days old, too new for stability).
+
+### Files Changed
+- `airflow/Dockerfile` — image tag `apache/airflow:2.8.4-python3.11` → `apache/airflow:3.0.0-python3.11`
+- `docker-compose.yml` — removed `airflow users create` from airflow-init command, added `AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS` + `AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE` env vars, mounted `airflow/passwords.json` into container, removed `_AIRFLOW_WWW_USER_USERNAME`/`_AIRFLOW_WWW_USER_PASSWORD` env vars
+- `.env.example` — removed `AIRFLOW_WWW_USER`/`AIRFLOW_WWW_PASSWORD`, added `AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS=admin:admin` + `AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE=/opt/airflow/config/passwords.json`
+
+### Files Created
+- `airflow/passwords.json` — SimpleAuthManager passwords file (`{"admin": "admin"}`)
+
+### Breaking Changes Handled
+- **Authentication**: Flask-AppBuilder (FAB) → SimpleAuthManager (new default in 3.0)
+- **User creation**: `airflow users create` CLI removed → users defined via `AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS` env var + `passwords.json` file
+- **airflow-init command**: simplified to `airflow db migrate` only (no user creation step)
+
+### What Stayed the Same
+- `AIRFLOW__CORE__EXECUTOR=LocalExecutor` — still works in 3.0
+- `AIRFLOW__DATABASE__SQL_ALCHEMY_CONN` — still works for core components
+- `AIRFLOW__CORE__LOAD_EXAMPLES=False` — still works
+- `airflow db migrate` command — still works in 3.0
+- Docker CLI installation + docker.sock mount for DockerOperator — unchanged

@@ -1,4 +1,4 @@
-FROM apache/airflow:2.8.4-python3.11
+FROM apache/airflow:3.0.0-python3.11
 
 # ============================================================
 # Why a custom Airflow image?
@@ -21,6 +21,13 @@ RUN apt-get update \
 # Switch back to the airflow user (UID 50000 in official image)
 USER airflow
 
-# Install Airflow providers from requirements.txt
+# Install uv by copying from the official uv Docker image.
+# This is a multi-stage COPY — pulls just the uv binary, no install script needed.
+# Faster and more reliable than curl | sh or pip install uv.
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+# Install Airflow providers using uv pip install (10-100x faster than pip).
+# --system: install into the container's system Python (no venv needed in containers).
+# --no-cache-dir: don't keep downloaded wheels (saves image size).
 COPY requirements.txt /requirements.txt
-RUN pip install --no-cache-dir -r /requirements.txt
+RUN uv pip install --system --no-cache-dir -r /requirements.txt
