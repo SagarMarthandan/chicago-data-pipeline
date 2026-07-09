@@ -1,0 +1,2 @@
+# This file ensures the jobs/ directory exists in git.
+# Spark job files (crime_batch.py, divvy_stream.py) will be added here in Phase 1.3 / 2.4.

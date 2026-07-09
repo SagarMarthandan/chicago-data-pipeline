@@ -1,0 +1,208 @@
+# ============================================================
+# Docker Compose — Phase 1: Batch Foundation
+# ============================================================
+# Services: Postgres, Spark (master + worker), Airflow (init + webserver + scheduler)
+# Kafka + Grafana are added in Phase 2 and 3 respectively.
+#
+# Before first run:
+#   1. cp .env.example .env   (fill in real values)
+#   2. docker compose build    (builds custom Airflow + Spark images)
+#   3. docker compose up -d    (starts all services)
+#
+# After startup:
+#   - Airflow UI:  http://localhost:8080  (admin / admin)
+#   - Spark UI:    http://localhost:8180
+#   - Postgres:    localhost:5432
+# ============================================================
+
+
+# --- YAML Anchor: shared Airflow config ---
+# The &airflow-common anchor defines config shared across all 3 Airflow services.
+# The <<: *airflow-common syntax in each service merges this block.
+# This avoids repeating 10+ lines of env vars and volumes 3 times.
+x-airflow-common: &airflow-common
+  build: ./airflow
+  environment:
+    # Executor — how Airflow runs tasks:
+    #   LocalExecutor = parallel tasks on one machine, no extra services needed
+    AIRFLOW__CORE__EXECUTOR: ${AIRFLOW__CORE__EXECUTOR}
+
+    # Metadata DB connection string.
+    # Format: postgresql+psycopg2://<user>:<pass>@<host>:<port>/<db>
+    # Uses psycopg2 driver (Python Postgres adapter).
+    # Host is "postgres" (Docker service name, not localhost).
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@postgres:5432/${AIRFLOW_DB_NAME}
+
+    # Don't load Airflow's example DAGs — they clutter the UI
+    AIRFLOW__CORE__LOAD_EXAMPLES: ${AIRFLOW__CORE__LOAD_EXAMPLES}
+
+    # New DAGs start unpaued (convenient for dev; in prod you'd want True)
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "False"
+
+    # Webserver port (inside the container)
+    AIRFLOW__WEBSERVER__WEB_SERVER_PORT: ${AIRFLOW__WEBSERVER__WEB_SERVER_PORT}
+
+    # Admin UI credentials — used by airflow-init to create the user
+    _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_WWW_USER}
+    _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_WWW_PASSWORD}
+
+  volumes:
+    # DAG files — bind mount so edits on host appear immediately in container
+    - ./airflow/dags:/opt/airflow/dags
+
+    # Task logs — named volume (persists across container rebuilds)
+    - airflow_logs:/opt/airflow/logs
+
+    # Spark jobs — mounted so DockerOperator can reference them
+    - ./spark/jobs:/opt/spark/jobs
+
+    # Docker socket — lets DockerOperator spawn containers from inside Airflow
+    # Without this, DockerOperator can't talk to the Docker daemon
+    - /var/run/docker.sock:/var/run/docker.sock
+
+
+services:
+
+  # ============ Postgres ============
+  # One instance, two databases:
+  #   chicago_analytics  — warehouse (raw + staging + mart schemas)
+  #   airflow_metadata   — Airflow internal state (DAG runs, task status, XComs)
+  #
+  # init.sql creates the schemas, airflow user, and airflow_metadata DB
+  # on first startup (when the data volume is empty).
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      # Named volume — data survives container rebuilds
+      - postgres_data:/var/lib/postgresql/data
+      # Init script — runs only on first startup (empty volume)
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      # pg_isready checks if Postgres is accepting connections
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+
+  # ============ Spark ============
+  # Master + worker architecture:
+  #   spark-master  — receives jobs, distributes work to workers, tracks status
+  #   spark-worker  — executes tasks, reports results to master
+  #
+  # Both use the same custom image (spark/Dockerfile) which adds the
+  # PostgreSQL JDBC driver to the bitnami/spark:3.5 base.
+  spark-master:
+    build: ./spark
+    restart: unless-stopped
+    environment:
+      - SPARK_MODE=master
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+    ports:
+      # Spark master Web UI — remapped to 8180 because 8080 is Airflow
+      - "8180:8080"
+      # Spark master RPC — workers connect via spark://spark-master:7077
+      - "7077:7077"
+    volumes:
+      # Spark jobs — mounted for direct testing (spark-submit from master)
+      - ./spark/jobs:/opt/bitnami/spark/jobs
+    healthcheck:
+      # Check if Spark master RPC port is listening
+      test: ["CMD-SHELL", "bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/7077'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  spark-worker:
+    build: ./spark
+    restart: unless-stopped
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_MEMORY=2G
+      - SPARK_WORKER_CORES=2
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    ports:
+      # Spark worker Web UI
+      - "8081:8081"
+    volumes:
+      - ./spark/jobs:/opt/bitnami/spark/jobs
+
+
+  # ============ Airflow ============
+  # Three services from one image (airflow/Dockerfile):
+  #
+  #   airflow-init      — one-shot: runs db migrations + creates admin user, then exits
+  #   airflow-webserver — serves the UI (port 8080)
+  #   airflow-scheduler — schedules and executes tasks
+  #
+  # webserver + scheduler wait for airflow-init to complete successfully
+  # before starting (depends_on: condition: service_completed_successfully).
+
+  airflow-init:
+    <<: *airflow-common
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # One-shot command: migrate metadata DB, then create admin user
+    # $$ escapes $ so Compose doesn't interpolate — bash reads from env instead
+    # || true on user create: if user already exists, don't fail the init
+    command: >
+      bash -c "
+      airflow db migrate &&
+      (airflow users create
+        --username $${_AIRFLOW_WWW_USER_USERNAME}
+        --password $${_AIRFLOW_WWW_USER_PASSWORD}
+        --firstname Admin
+        --lastname User
+        --role Admin
+        --email admin@example.com || true)
+      "
+
+  airflow-webserver:
+    <<: *airflow-common
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    ports:
+      - "8080:8080"
+    healthcheck:
+      # Airflow's /health endpoint returns 200 when webserver is ready
+      test: ["CMD-SHELL", "curl --fail http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      # start_period gives Airflow time to boot before healthcheck counts
+      start_period: 30s
+
+  airflow-scheduler:
+    <<: *airflow-common
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+
+# ============ Named Volumes ============
+# Named volumes persist data across container rebuilds.
+# Without these, `docker compose down` destroys all data.
+volumes:
+  postgres_data:
+  airflow_logs:

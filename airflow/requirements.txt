@@ -1,0 +1,7 @@
+# Airflow provider packages
+# These extend Airflow with operators, hooks, and sensors for external systems.
+#
+# postgres — PostgresHook (DB connections), SqlSensor (wait for data)
+# docker   — DockerOperator (run Spark jobs in isolated containers)
+apache-airflow-providers-postgres
+apache-airflow-providers-docker

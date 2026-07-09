@@ -58,6 +58,50 @@ docker compose build              # rebuild images
 - Kafka producer → Kafka: `kafka:9092`
 - From host (DBeaver, psql): `localhost:<published_port>`
 
+### YAML Anchors
+Share config across multiple services using `x-` extension fields:
+```yaml
+x-airflow-common: &airflow-common
+  build: ./airflow
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  volumes:
+    - ./dags:/opt/airflow/dags
+
+services:
+  airflow-webserver:
+    <<: *airflow-common    # merges the anchor
+    ports:
+      - "8080:8080"
+  airflow-scheduler:
+    <<: *airflow-common    # same config, no repetition
+```
+- `&name` creates the anchor, `<<: *name` merges it into a service
+- The `x-` prefix tells Compose this is an extension field, not a service
+
+### `depends_on` Conditions
+```yaml
+depends_on:
+  postgres:
+    condition: service_healthy          # waits until healthcheck passes
+  airflow-init:
+    condition: service_completed_successfully  # waits for one-shot init to exit 0
+```
+- `service_healthy` — for long-running services with healthchecks
+- `service_completed_successfully` — for one-shot init/migration containers
+- Without a condition, `depends_on` only waits for the container to start (not ready)
+
+### `$$` vs `$` in Compose
+- `$VAR` — Compose interpolates from `.env` at compose time
+- `$$VAR` — escapes to literal `$VAR`, so the container's shell expands it at runtime
+- Use `$$` when you need bash to read an env var that was set via the `environment:` block
+
+### DockerOperator + docker.sock
+Airflow's DockerOperator creates containers from inside the Airflow container. To do this, it needs:
+1. **Docker CLI** installed in the Airflow image (official image doesn't include it)
+2. **docker.sock mounted** — `/var/run/docker.sock:/var/run/docker.sock` bridges the Airflow container to the host's Docker daemon
+3. **Network access** — `network_mode: "chicago-data-pipeline_default"` so the spawned container can reach Postgres
+
 ---
 
 ## Postgres
@@ -76,8 +120,44 @@ psql -h localhost -p 5432 -U chicago -d chicago_analytics
 ```
 
 ### Schemas
-- `raw` — landing zone, untransformed ingested data
-- `mart` — DBT output, analytics-ready tables
+- `raw` — landing zone, untransformed data from Spark/Kafka
+- `staging` — DBT staging layer: light cleaning, renaming, type casting (1:1 with source tables)
+- `mart` — DBT final output: facts + dimensions, analytics-ready
+
+### Schema vs DBT Layer
+Postgres schemas are **physical namespaces** in the database. DBT layers are **logical transformation stages** (folders in your dbt project). They're different concepts:
+- You can have 3 DBT model layers mapped to 3 Postgres schemas (this project's approach)
+- Or all DBT output in one schema (simpler, less separation)
+- Schema-per-layer gives clearer separation and finer-grained access control (e.g., grant analysts access to `mart` only)
+
+### Init Scripts (`/docker-entrypoint-initdb.d/`)
+- Scripts in this directory run **once** on first container startup (when the data volume is empty)
+- Supported formats: `.sql` (run as SQL), `.sh` (run as shell script), `.sql.gz` (decompressed then run)
+- Run in alphabetical order as the `POSTGRES_USER` connected to `POSTGRES_DB`
+- **Changing init.sql after first run does nothing** — must destroy the volume: `docker compose down -v`
+- SQL files **cannot read `.env` variables** — only `docker-compose.yml` can interpolate `${VAR}`. Use a `.sh` script if you need env vars in init logic.
+
+### Postgres "If Not Exists" Workarounds
+Postgres lacks `CREATE USER IF NOT EXISTS` and `CREATE DATABASE IF NOT EXISTS`. Workarounds:
+
+```sql
+-- User: use DO block with pg_roles check
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'myuser') THEN
+        CREATE ROLE myuser WITH LOGIN PASSWORD 'mypass';
+    END IF;
+END
+$$;
+
+-- Database: use \gexec (psql meta-command)
+-- CREATE DATABASE can't run inside a transaction, so IF NOT EXISTS patterns don't work
+SELECT 'CREATE DATABASE mydb OWNER myuser'
+WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'mydb')\gexec
+```
+
+- `$$` are dollar quotes — tell Postgres "treat everything between as a string body"
+- `\gexec` takes the query result (a SQL string) and executes it as a new command
 
 ### Cast Syntax
 ```sql
@@ -118,6 +198,11 @@ dbt debug                        # check connection/config
 dbt docs generate && dbt docs serve  # generate and view docs
 ```
 
+### Model Layers
+- **staging** — rename, type-cast, light cleaning (1:1 with source tables) → written to `staging` schema
+- **marts** — final analytics tables (facts + dims) → written to `mart` schema
+- **intermediate** (skipped for now) — joins, aggregations; can add `intermediate` schema later if needed
+
 ### Macro Dispatch Pattern
 ```sql
 {% macro try_cast(column, target_type) %}
@@ -130,11 +215,6 @@ dbt docs generate && dbt docs serve  # generate and view docs
   {% endif %}
 {% endmacro %}
 ```
-
-### Model Layers
-- **staging** — rename, type-cast, light cleaning (1:1 with source tables)
-- **intermediate** — joins, aggregations, business logic
-- **marts** — final analytics tables (facts + dims)
 
 ---
 
@@ -235,6 +315,21 @@ airflow tasks test crime_batch download_crime 2024-01-15
 - **XCom** — cross-task communication (small data only)
 - **Sensor** — a special operator that waits for a condition
 - **Idempotency** — re-running produces the same result; always design for this
+
+### Executors
+| Executor | What it is | When to use | Extra services |
+|---|---|---|---|
+| `SequentialExecutor` | One task at a time, single thread | Dev/testing only | None |
+| `LocalExecutor` | Parallel tasks on one machine | Phase 1 — good fit | None (uses metadata DB) |
+| `CeleryExecutor` | Distributes tasks across worker machines | Production / heavy workloads | Redis or RabbitMQ + Celery workers |
+
+### Metadata Database
+Airflow needs its OWN database to track DAG runs, task states, scheduling info, and logs. This is NOT your analytics data. If you point Airflow at your warehouse DB, it creates tables like `task_instance`, `dag_run`, `xcom` and pollutes your analytics schema. Always use a separate database (can be in the same Postgres instance, just a different DB + user).
+
+### `.env` vs `.env.example`
+- `.env.example` — committed to git, documents required variables with placeholder values
+- `.env` — gitignored, contains real secrets. Compose reads it automatically at `docker compose up`
+- Image names (e.g., `postgres:16-alpine`) go in `docker-compose.yml`, NOT `.env`. `.env` is for secrets and environment-specific config only.
 
 ### Scheduling
 - `schedule="@daily"` — runs daily

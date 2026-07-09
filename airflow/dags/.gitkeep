@@ -1,0 +1,2 @@
+# This file ensures the dags/ directory exists in git.
+# Airflow DAG files (crime_batch_dag.py, etc.) will be added here in Phase 1.6.
