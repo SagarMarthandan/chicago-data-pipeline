@@ -101,13 +101,14 @@ A chronological log of operations, files created, and structural changes made to
 - All env vars interpolated from `.env` (e.g., `${POSTGRES_USER}`, `${AIRFLOW_DB_PASSWORD}`)
 - Airflow 3.0 changes: SimpleAuthManager env vars added, `airflow/passwords.json` mounted, `airflow users create` removed from airflow-init (only `airflow db migrate` now)
 
-### `airflow/Dockerfile` (created, updated to Airflow 3.0)
+### `airflow/Dockerfile` (created, updated to Airflow 3.0, permission fix applied)
 - Based on `apache/airflow:3.0.0-python3.11` (upgraded from 2.8.4 — 2.x is EOL since April 2026)
 - Installs `docker.io` (Docker CLI) for DockerOperator — official image doesn't include it
 - Copies uv binary from `ghcr.io/astral-sh/uv:latest` via multi-stage COPY (no install script needed)
 - Installs Airflow providers from `airflow/requirements.txt` using `uv pip install --system` (10-100x faster than pip)
 - Uses `--system` flag (installs into container's system Python, no venv needed in containers)
 - Uses `uv pip install` not `uv sync` because host and containers need different packages
+- Runs `uv pip install` as root (not airflow user) because `--system` writes to `/usr/local/lib/python3.11/site-packages/` which is owned by root. Switches to `USER airflow` at the end for running services.
 
 ### `airflow/passwords.json` (created)
 - Airflow 3.0 SimpleAuthManager passwords file
@@ -119,10 +120,11 @@ A chronological log of operations, files created, and structural changes made to
 - `apache-airflow-providers-postgres` — PostgresHook, SqlSensor
 - `apache-airflow-providers-docker` — DockerOperator
 
-### `spark/Dockerfile` (created)
-- Based on `bitnami/spark:3.5`
-- Downloads PostgreSQL JDBC driver (`postgresql-42.7.3.jar`) into `/opt/bitnami/spark/jars/`
+### `spark/Dockerfile` (created, updated to apache/spark)
+- Based on `apache/spark:3.5.1` (switched from `bitnami/spark:3.5` — Bitnami moved behind commercial subscription in 2026)
+- Downloads PostgreSQL JDBC driver (`postgresql-42.7.3.jar`) into `/opt/spark/jars/`
 - Needed for Spark to write to Postgres via JDBC (`df.write.format("jdbc")`)
+- Non-root user is `spark` (UID 185), not Bitnami's UID 1001
 
 ### Directory placeholders
 - `airflow/dags/.gitkeep` — ensures dags/ directory exists in git
@@ -170,3 +172,121 @@ Airflow 2.x reached end-of-life in April 2026. No more security patches or bug f
 - `AIRFLOW__CORE__LOAD_EXAMPLES=False` — still works
 - `airflow db migrate` command — still works in 3.0
 - Docker CLI installation + docker.sock mount for DockerOperator — unchanged
+
+
+---
+
+## 2026-07-09 — Chat History System Created
+
+### Why
+GLM 5.2 has a 200k context window. At ~75% usage, auto-compaction compresses older messages and loses detail. The `chat-history/` folder is a permanent, uncompressed reference — a "second brain" that a fresh or compacted session can read to reconstruct what was done, why, and what's next.
+
+### Structure
+```
+chat-history/
+├── README.md                    ← explains the system, structure, chunk format
+├── current-state.md             ← HANDOFF DOC — read first in new session
+├── 2026-07-08/
+│   └── 01-project-setup-and-migration.md
+├── 2026-07-09/
+    ├── 01-docker-setup-env-and-init.md
+    ├── 02-docker-compose-and-dockerfiles.md
+    ├── 03-uv-init.md
+    ├── 04-airflow-upgrade.md
+    └── 05-chat-history-system.md
+```
+
+### Files Created
+- `chat-history/README.md` — explains the system, how to use it, chunk format
+- `chat-history/current-state.md` — handoff document with current project state, active decisions, next steps, constraints, user preferences
+- `chat-history/2026-07-08/01-project-setup-and-migration.md` — initial planning, WSL migration, three-doc system
+- `chat-history/2026-07-09/01-docker-setup-env-and-init.md` — .env.example + init.sql
+- `chat-history/2026-07-09/02-docker-compose-and-dockerfiles.md` — 6 services, Dockerfiles, YAML anchors
+- `chat-history/2026-07-09/03-uv-init.md` — uv project mode + uv in Docker
+- `chat-history/2026-07-09/04-airflow-upgrade.md` — Airflow 2.8.4 → 3.0.0, SimpleAuthManager migration
+- `chat-history/2026-07-09/05-chat-history-system.md` — this system (meta)
+
+### Key Decision
+| Decision | Choice | Why |
+|---|---|---|
+| Chat history tracking | Structured Markdown chunks in date folders | Complements the three-doc system (which tracks the project). This tracks the *conversation*. Chunked by topic, not by message, for easy lookup. `current-state.md` is the handoff doc for fresh sessions. |
+
+---
+
+## 2026-07-09 — Bitnami Spark → apache/spark Migration
+
+### Why
+`docker compose build` failed: `bitnami/spark:3.5: not found`. Bitnami moved their Docker images behind a commercial subscription ("Bitnami Secure Images") in 2026. The free `docker.io/bitnami/*` images are no longer available.
+
+### Files Changed
+- `spark/Dockerfile` — base image `bitnami/spark:3.5` → `apache/spark:3.5.1`, JDBC path `/opt/bitnami/spark/jars/` → `/opt/spark/jars/`, non-root user UID 1001 → `spark` (UID 185)
+- `docker-compose.yml` — Spark services rewritten:
+  - `spark-master`: replaced `SPARK_MODE=master` env var with `command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master`
+  - `spark-worker`: replaced `SPARK_MODE=worker` + `SPARK_MASTER_URL` env vars with `command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077`
+  - Volume paths: `/opt/bitnami/spark/jobs/` → `/opt/spark/jobs/`
+  - Added `SPARK_MASTER_HOST=spark-master` env var (tells master to advertise Docker service name)
+  - Healthcheck: bash `/dev/tcp` → python3 socket check (more portable)
+  - Removed Bitnami-specific RPC/SSL env vars (`SPARK_RPC_AUTHENTICATION_ENABLED`, etc.)
+  - `SPARK_WORKER_CORES=2` and `SPARK_WORKER_MEMORY=2G` still work as env vars (spark-class reads them)
+
+### Current Repo Structure
+```
+~/chicago-data-pipeline/
+├── .env.example
+├── .gitignore
+├── AGENTS.md
+├── README.md
+├── changelog.md
+├── chicago-pipeline-plan.md
+├── docker-compose.yml
+├── init.sql
+├── pyproject.toml
+├── uv.lock
+├── airflow/
+│   ├── Dockerfile
+│   ├── passwords.json
+│   ├── requirements.txt
+│   └── dags/.gitkeep
+├── spark/
+│   ├── Dockerfile
+│   └── jobs/.gitkeep
+├── chat-history/
+│   ├── README.md
+│   ├── current-state.md
+│   └── 2026-07-0{8,9}/*.md
+└── docs/
+    ├── knowledge.md
+    ├── learning-protocol.md
+    ├── operations-performed.md
+    ├── phases/
+    │   ├── README.md
+    │   ├── TEMPLATE.md
+    │   └── phase-1.1-docker.md
+    └── conventions/
+        ├── airflow.md
+        ├── dbt.md
+        ├── docker.md
+        └── spark.md
+```
+
+**Phase 1.1 (Docker Compose services) is complete and verified.** All 6 services running and healthy. Next: Phase 1.2 (ingestion script).
+
+---
+
+## 2026-07-09 — Airflow 3.0 Runtime Fixes + Phase Documentation System
+
+### Airflow 3.0 Runtime Fixes
+- `docker-compose.yml` — 4 fixes:
+  - `airflow-webserver` command: `webserver` → `api-server` (command removed in 3.0)
+  - `airflow-scheduler`: added explicit `command: scheduler` (3.0 image has no default CMD)
+  - `airflow-webserver` healthcheck: `/health` → `/api/v2/monitor/health` (endpoint moved in 3.0)
+  - Added missing `healthcheck:` key (was accidentally under `ports:`)
+- `.env.example` — `AIRFLOW__WEBSERVER__WEB_SERVER_PORT` → `AIRFLOW__API__PORT` (config section moved in 3.0)
+- `airflow/passwords.json` — `chmod 666` on host (SimpleAuthManager opens with `a+` mode, airflow user UID 50000 needs write access)
+
+### Phase Documentation System Created
+- `docs/phases/README.md` — explains the phase-doc system: when to create, what goes in each section, relationship to other docs
+- `docs/phases/TEMPLATE.md` — copy this to start a new phase doc (sections: summary, files, architecture with mermaid, errors, decisions, verification, what's next)
+- `docs/phases/phase-1.1-docker.md` — Phase 1.1 completion document with 7 section-by-section mermaid diagrams, all 8 errors, 10 decisions, verification output
+- `AGENTS.md` — added rule 13: create phase-completion doc after each sub-phase
+- `docs/knowledge.md` — added "How Everything Connects" section (8 subsections, 9 mermaid diagrams) explaining how uv, Spark, Airflow, init.sql, .env, docker.sock, and docker-compose.yml all link together

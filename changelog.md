@@ -223,4 +223,85 @@ Airflow 2.x reached end-of-life in April 2026. The final 2.x release was 2.11.2 
 
 ---
 
+## 2026-07-09 — Bitnami Spark image not found → switched to apache/spark
+
+### Error
+`docker compose build` failed: `bitnami/spark:3.5: not found`
+
+### Root Cause
+Bitnami moved their Docker images behind a commercial subscription ("Bitnami Secure Images") in 2026. The free `docker.io/bitnami/*` images are no longer available on Docker Hub.
+
+### Fix
+Switched from `bitnami/spark:3.5` to `apache/spark:3.5.1` (official Apache Spark image, free, actively maintained).
+
+### Breaking Changes (bitnami → apache/spark)
+
+| Concept | bitnami/spark | apache/spark |
+|---|---|---|
+| Start master | `SPARK_MODE=master` env var | `spark-class org.apache.spark.deploy.master.Master` command |
+| Start worker | `SPARK_MODE=worker` + `SPARK_MASTER_URL` env vars | `spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077` command |
+| SPARK_HOME | `/opt/bitnami/spark` | `/opt/spark` |
+| JDBC jar path | `/opt/bitnami/spark/jars/` | `/opt/spark/jars/` |
+| Jobs mount path | `/opt/bitnami/spark/jobs/` | `/opt/spark/jobs/` |
+| Non-root user | UID 1001 | `spark` (UID 185) |
+| RPC/SSL env vars | `SPARK_RPC_AUTHENTICATION_ENABLED=no` etc. | Not needed (defaults are open) |
+
+### Additional Changes
+- Added `SPARK_MASTER_HOST=spark-master` env var — tells master to advertise the Docker service name so workers can resolve it. Without this, master advertises a random container hostname.
+- Healthcheck switched from bash `/dev/tcp` to `python3` socket check — more portable across base images.
+- Worker resources (`SPARK_WORKER_CORES=2`, `SPARK_WORKER_MEMORY=2G`) still work as env vars — `spark-class` startup scripts read them.
+
+### Lesson
+- **Bitnami images are no longer free** — as of 2026, Bitnami moved behind a commercial subscription. Always verify Docker image availability before pinning. The official `apache/spark` image is the upstream source, free, and actively maintained.
+- **Different Spark images have different interfaces** — Bitnami wrapped Spark with env var config (`SPARK_MODE`). The official image uses raw `spark-class` commands. When switching base images, expect config interface changes, not just path changes.
+
+---
+
+## 2026-07-09 — Airflow Dockerfile permission denied during uv pip install
+
+### Error
+`uv pip install --system` failed: `failed to create directory /usr/local/lib/python3.11/site-packages/markdown_it_py-4.2.0.dist-info: Permission denied (os error 13)`
+
+### Root Cause
+The Dockerfile switched to `USER airflow` (UID 50000) before running `uv pip install --system`. The airflow user doesn't have write access to `/usr/local/lib/python3.11/site-packages/` — that directory is owned by root.
+
+### Fix
+Run `uv pip install --system` as root, then switch to `USER airflow` for the final image. The Dockerfile now stays as root through both `apt-get install` and `uv pip install`, then switches to airflow at the end.
+
+### Lesson
+- **`--system` installs need root** — `uv pip install --system` writes to the system Python's site-packages directory, which is owned by root. If you switch to a non-root user before this command, it will fail with permission denied. Install packages as root, then switch to the runtime user for the final image.
+
+---
+
+## 2026-07-09 — Airflow 3.0 runtime breaking changes (webserver, scheduler, health, permissions)
+
+### Errors
+Four issues discovered during `docker compose up`:
+
+| # | Error | Root Cause | Fix |
+|---|---|---|---|
+| 1 | Spark master unhealthy | Healthcheck checked RPC port 7077 on `127.0.0.1`, but Spark binds RPC to container's Docker network IP (172.18.0.x), not localhost. Web UI (8080) binds to 0.0.0.0. | Changed healthcheck to check port 8080 (Web UI) instead of 7077 (RPC) |
+| 2 | Airflow webserver crashes: `airflow command error: arguments required` | Airflow 3.0 removed `airflow webserver` command. Replaced by `airflow api-server`. | Changed `command` to `api-server` |
+| 3 | Airflow scheduler crashes: same error | Airflow 3.0 image has no default CMD. Without explicit `command: scheduler`, the entrypoint runs `airflow` with no subcommand. | Added `command: scheduler` |
+| 4 | Airflow webserver: `PermissionError: /opt/airflow/config/passwords.json` | SimpleAuthManager opens passwords.json with `a+` mode (read+write). File was root-owned, airflow user (UID 50000) couldn't write. | `chmod 666 airflow/passwords.json` on host |
+| 5 | Healthcheck 404 on `/health` | Airflow 3.0 moved health endpoint to `/api/v2/monitor/health` | Updated healthcheck URL |
+| 6 | `AIRFLOW__WEBSERVER__WEB_SERVER_PORT` deprecated | Airflow 3.0 moved port config from `[webserver]` to `[api]` section | Changed env var to `AIRFLOW__API__PORT` |
+
+### Airflow 3.0 Breaking Changes Summary (runtime)
+
+| Concept | Airflow 2.x | Airflow 3.0 |
+|---|---|---|
+| Web UI command | `airflow webserver` | `airflow api-server` |
+| Scheduler command | Default CMD in image | Explicit `command: scheduler` needed |
+| Health endpoint | `/health` | `/api/v2/monitor/health` |
+| Port config section | `[webserver]` | `[api]` |
+| Port env var | `AIRFLOW__WEBSERVER__WEB_SERVER_PORT` | `AIRFLOW__API__PORT` |
+
+### Lessons
+- **Airflow 3.0 is NOT a drop-in upgrade from 2.x** — beyond auth changes, the webserver command, health endpoint, config sections, and default CMD all changed. Always test with `docker compose up` after upgrading, not just build.
+- **Spark master binds RPC to Docker network IP, not localhost** — the Web UI binds to 0.0.0.0 but the RPC port binds to the container's specific IP. Healthchecks inside the container should check the Web UI port, not the RPC port.
+- **Bind-mounted files need permissions for the container user** — when mounting a file from host into a container, the file's host permissions carry over. If the container user (UID 50000) needs write access, `chmod 666` on the host.
+
+---
+
 <!-- Append new entries below. Keep the format consistent. -->

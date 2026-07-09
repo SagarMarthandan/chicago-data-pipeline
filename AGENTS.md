@@ -1,7 +1,7 @@
 # AGENTS.md — Chicago Crime + Divvy Pipeline
 
 > **Read this file before doing anything in this repo.**
-> If you are an AI assistant (Devin, Claude, Copilot, etc.), follow `docs/learning-protocol.md` for how to interact with me. Read `changelog.md` for past errors and fixes, `docs/knowledge.md` for reference material, and `docs/operations-performed.md` for a record of what has been built and why.
+> If you are an AI assistant (Devin, Claude, Copilot, etc.), follow `docs/learning-protocol.md` for how to interact with me. Read `chat-history/current-state.md` first for session context (handoff doc), then `changelog.md` for past errors and fixes, `docs/knowledge.md` for reference material, and `docs/operations-performed.md` for a record of what has been built and why.
 
 ## Project
 
@@ -57,14 +57,16 @@ If I ask you to help with Phase 2 while Phase 1 isn't done, refuse and remind me
 9. **Read `changelog.md` before starting work** — it logs past errors and fixes. Check it to avoid repeating mistakes. Update it when we fix a new error.
 10. **Read `docs/knowledge.md` for reference** — it has useful commands, syntax, and explanations. Update it when you learn something worth remembering.
 11. **Update `docs/operations-performed.md` after structural changes** — record what files/structures were created and why. This is the audit trail of what exists in the repo.
+12. **Read `chat-history/current-state.md` for session context** — it's the handoff document with current state, active decisions, and next steps. Read `chat-history/YYYY-MM-DD/` folders for detailed conversation history by topic. Update `current-state.md` at the end of a session and create new chunks when context approaches 75% usage.
+13. **Create a phase-completion document after each sub-phase** — when a sub-phase (e.g., 1.1, 1.2) is verified working, create `docs/phases/phase-X.Y.md` using the template in `docs/phases/TEMPLATE.md`. This document captures: what was built, how files connect (with section-by-section mermaid diagrams), what errors were hit, and what's next. See `docs/phases/README.md` for the full process.
 
 ## Repo Structure (target)
 
 See `chicago-pipeline-plan.md` for the full structure. Key directories:
 ```
-chicago-data-pipeline/      ← repo root (you are here)
 ├── AGENTS.md
 ├── changelog.md            ← errors, fixes, lessons (read before working)
+├── chat-history/           ← conversation reference (read current-state.md first)
 ├── docker-compose.yml
 ├── ingestion/
 ├── spark/
@@ -73,13 +75,14 @@ chicago-data-pipeline/      ← repo root (you are here)
 ├── dbt/
 ├── grafana/
 ├── terraform/             ← Phase 4 only
-└── docs/
     ├── knowledge.md               ← reference commands, syntax, explanations
     ├── learning-protocol.md
     ├── operations-performed.md    ← audit trail of what was built and why
+    ├── phases/                    ← phase-completion docs (one per sub-phase)
+    │   ├── README.md              ← explains the phase-doc system
+    │   ├── TEMPLATE.md            ← copy this to start a new phase doc
+    │   └── phase-1.1-docker.md    ← Phase 1.1: Docker Compose services
     └── conventions/
-        ├── docker.md
-        ├── dbt.md
         ├── spark.md
         └── airflow.md
 ```

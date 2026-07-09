@@ -39,8 +39,9 @@ x-airflow-common: &airflow-common
     # New DAGs start unpaused (convenient for dev; in prod you'd want True)
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "False"
 
-    # Webserver port (inside the container)
-    AIRFLOW__WEBSERVER__WEB_SERVER_PORT: ${AIRFLOW__WEBSERVER__WEB_SERVER_PORT}
+    # API server port (inside the container)
+    # Airflow 3.0 change: moved from [webserver] section to [api] section
+    AIRFLOW__API__PORT: ${AIRFLOW__API__PORT}
 
     # ============ Airflow 3.0 Authentication ============
     # Airflow 3.0 replaces Flask-AppBuilder (FAB) with SimpleAuthManager.
@@ -110,16 +111,24 @@ services:
   #   spark-worker  — executes tasks, reports results to master
   #
   # Both use the same custom image (spark/Dockerfile) which adds the
-  # PostgreSQL JDBC driver to the bitnami/spark:3.5 base.
+  # PostgreSQL JDBC driver to the apache/spark:3.5.1 base.
+  #
+  # Note: We switched from bitnami/spark to apache/spark because
+  # Bitnami moved their images behind a commercial subscription in 2026.
+  # The official apache/spark image uses spark-class commands instead
+  # of Bitnami's SPARK_MODE env var interface.
   spark-master:
     build: ./spark
     restart: unless-stopped
     environment:
-      - SPARK_MODE=master
-      - SPARK_RPC_AUTHENTICATION_ENABLED=no
-      - SPARK_RPC_ENCRYPTION_ENABLED=no
-      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
-      - SPARK_SSL_ENABLED=no
+      # SPARK_MASTER_HOST tells the master what hostname to advertise to workers.
+      # Without this, the master advertises a random container hostname that
+      # workers can't resolve. Setting it to the Docker service name ensures
+      # workers can connect back via spark://spark-master:7077.
+      SPARK_MASTER_HOST: spark-master
+    # Official apache/spark uses spark-class to start master/worker directly.
+    # Bitnami's SPARK_MODE=master env var doesn't exist in the official image.
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
     ports:
       # Spark master Web UI — remapped to 8180 because 8080 is Airflow
       - "8180:8080"
@@ -127,26 +136,29 @@ services:
       - "7077:7077"
     volumes:
       # Spark jobs — mounted for direct testing (spark-submit from master)
-      - ./spark/jobs:/opt/bitnami/spark/jobs
+      - ./spark/jobs:/opt/spark/jobs
     healthcheck:
-      # Check if Spark master RPC port is listening
-      test: ["CMD-SHELL", "bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/7077'"]
+      # Check if Spark master Web UI is responding on port 8080.
+      # We check the Web UI (not the RPC port 7077) because Spark master
+      # binds the RPC port to the container's Docker network IP (e.g., 172.18.0.2),
+      # NOT to 127.0.0.1. The Web UI binds to 0.0.0.0 (all interfaces),
+      # so it's reachable from localhost inside the container.
+      # Uses python3 (available in apache/spark image for PySpark).
+      test: ["CMD-SHELL", "python3 -c \"import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1', 8080)); s.close()\""]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
 
   spark-worker:
     build: ./spark
     restart: unless-stopped
     environment:
-      - SPARK_MODE=worker
-      - SPARK_MASTER_URL=spark://spark-master:7077
-      - SPARK_WORKER_MEMORY=2G
-      - SPARK_WORKER_CORES=2
-      - SPARK_RPC_AUTHENTICATION_ENABLED=no
-      - SPARK_RPC_ENCRYPTION_ENABLED=no
-      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
-      - SPARK_SSL_ENABLED=no
+      # Worker resource limits — read by spark-class startup scripts
+      SPARK_WORKER_CORES: 2
+      SPARK_WORKER_MEMORY: 2G
+    # Worker connects to master via spark://spark-master:7077
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     depends_on:
       spark-master:
         condition: service_healthy
@@ -154,7 +166,7 @@ services:
       # Spark worker Web UI
       - "8081:8081"
     volumes:
-      - ./spark/jobs:/opt/bitnami/spark/jobs
+      - ./spark/jobs:/opt/spark/jobs
 
   # ============ Airflow 3.0 ============
   # Three services from one image (airflow/Dockerfile):
@@ -182,18 +194,20 @@ services:
       bash -c "
       airflow db migrate
       "
-
   airflow-webserver:
     <<: *airflow-common
     restart: unless-stopped
     depends_on:
       airflow-init:
         condition: service_completed_successfully
+    # Airflow 3.0 change: `airflow webserver` command is GONE.
+    # Replaced by `airflow api-server` — the API server now serves the web UI too.
+    command: api-server
     ports:
       - "8080:8080"
     healthcheck:
-      # Airflow's /health endpoint returns 200 when webserver is ready
-      test: ["CMD-SHELL", "curl --fail http://localhost:8080/health || exit 1"]
+      # Airflow 3.0 health endpoint: /api/v2/monitor/health (not /health)
+      test: ["CMD-SHELL", "curl --fail http://localhost:8080/api/v2/monitor/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -206,6 +220,8 @@ services:
     depends_on:
       airflow-init:
         condition: service_completed_successfully
+    # Airflow 3.0: explicit command needed (image has no default CMD)
+    command: scheduler
 
 
 # ============ Named Volumes ============

@@ -186,6 +186,307 @@ Airflow's DockerOperator creates containers from inside the Airflow container. T
 
 ---
 
+## How Everything Connects — Architecture Walkthrough
+
+This section explains how every file in the repo connects to Docker, how uv links to containers, how Spark and Airflow images are built, and how docker-compose.yml ties it all together. Each subsection has its own focused diagram.
+
+### The Big Picture (file → container mapping)
+
+```mermaid
+graph TB
+    subgraph "Host filesystem (~/chicago-data-pipeline/)"
+        DC[docker-compose.yml]
+        ENV[.env]
+        INIT[init.sql]
+        PYPROJ[pyproject.toml + uv.lock]
+        VENV[.venv/]
+        subgraph "airflow/"
+            ADF[airflow/Dockerfile]
+            AREQ[airflow/requirements.txt]
+            APW[airflow/passwords.json]
+            ADAGS[airflow/dags/]
+        end
+        subgraph "spark/"
+            SDF[spark/Dockerfile]
+            SJOBS[spark/jobs/]
+        end
+    end
+
+    DC -->|builds image from| ADF
+    DC -->|builds image from| SDF
+    DC -->|mounts| INIT
+    DC -->|mounts| APW
+    DC -->|mounts| ADAGS
+    DC -->|mounts| SJOBS
+    DC -->|reads vars from| ENV
+    PYPROJ -->|creates| VENV
+```
+
+### 1. How uv Links to Docker
+
+uv exists in **two places** — the host and inside the Airflow container — for different reasons:
+
+```mermaid
+graph LR
+    subgraph "Host (WSL)"
+        UV1[uv binary]
+        PP[pyproject.toml]
+        UL[uv.lock]
+        VENV[.venv/]
+        UV1 -->|uv sync reads| UL
+        UL -->|installs into| VENV
+        PP -->|declares deps| UL
+    end
+
+    subgraph "Airflow container (build time)"
+        UV2[uv binary<br/>COPY --from=uv image]
+        AREQ[requirements.txt]
+        SITE[/usr/local/lib/<br/>python3.11/<br/>site-packages/]
+        UV2 -->|uv pip install --system| SITE
+        AREQ -->|lists packages| UV2
+    end
+
+    UV1 -.->|same tool,<br/>different purpose| UV2
+```
+
+**Host uv** manages your development Python:
+- `pyproject.toml` declares what packages you need (sodapy, dbt-core, etc.)
+- `uv.lock` pins exact versions for reproducibility
+- `uv sync` reads the lockfile and installs into `.venv/`
+- You use this for running ingestion scripts, DBT dev, ad-hoc queries
+
+**Container uv** is used only at **build time** (in the Dockerfile), not at runtime:
+- `COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv` — copies just the uv binary into the image (multi-stage copy, no install script)
+- `uv pip install --system -r requirements.txt` — installs Airflow providers into the container's system Python
+- `--system` means "install into the container's Python, not a venv" — containers don't need venvs because they're already isolated
+
+**Why not `uv sync` inside Docker?** `uv sync` reads the root `uv.lock`, which has host packages (dbt-core, sodapy). The Airflow container needs different packages (airflow providers). Using `uv pip install -r requirements.txt` installs only what the container needs.
+
+**Key point:** The two uv environments are completely independent. Host packages never enter containers, and container packages never enter the host.
+
+### 2. How Spark Links to Docker
+
+The Spark image is built from `spark/Dockerfile`. It starts from the official `apache/spark:3.5.1` image and adds the PostgreSQL JDBC driver:
+
+```mermaid
+graph TB
+    BASE[apache/spark:3.5.1<br/>official image]
+    DOWNLOAD[Download postgresql-42.7.3.jar<br/>to /opt/spark/jars/]
+    BASE --> DOWNLOAD
+    DOWNLOAD --> CUSTOM[Custom spark image<br/>chicago-data-pipeline-spark]
+
+    CUSTOM -->|docker-compose.yml builds| SM[spark-master container]
+    CUSTOM -->|docker-compose.yml builds| SW[spark-worker container]
+
+    SM -->|command: spark-class<br/>org.apache.spark.deploy.<br/>master.Master| MASTER[Master process<br/>UI: port 8180<br/>RPC: port 7077]
+    SW -->|command: spark-class<br/>org.apache.spark.deploy.<br/>worker.Worker<br/>spark://spark-master:7077| WORKER[Worker process<br/>connects to master<br/>UI: port 8081]
+```
+
+**Why a custom image?** The official `apache/spark` image doesn't include the PostgreSQL JDBC driver. Without it, `df.write.format("jdbc")` throws `ClassNotFoundException`. Baking the JAR into the image means:
+- Works offline (no Maven Central download at runtime)
+- Faster startup (no download delay)
+- More reliable (no network dependency)
+
+**How docker-compose.yml uses it:**
+- `build: ./spark` — tells Compose to build the image from `spark/Dockerfile`
+- Both `spark-master` and `spark-worker` use the same image (same `build: ./spark`)
+- The `command:` override differentiates them — same image, different process
+
+**How spark/jobs/ is used:**
+- `./spark/jobs:/opt/spark/jobs` — bind-mounted into both master and worker
+- You write PySpark scripts here (e.g., `crime_batch.py`)
+- Can run directly: `spark-submit --master local[*] jobs/crime_batch.py`
+- Or Airflow's DockerOperator can submit them
+
+### 3. How Airflow Links to Docker
+
+The Airflow image is built from `airflow/Dockerfile`. It starts from `apache/airflow:3.0.0-python3.11` and adds Docker CLI + Airflow providers:
+
+```mermaid
+graph TB
+    BASE[apache/airflow:3.0.0-python3.11<br/>official image]
+    DOCKER[Install docker.io CLI<br/>apt-get install]
+    UVCOPY[COPY uv binary<br/>from ghcr.io/astral-sh/uv]
+    PROVIDERS[Install providers<br/>uv pip install --system<br/>-r requirements.txt]
+    BASE --> DOCKER --> UVCOPY --> PROVIDERS
+    PROVIDERS --> CUSTOM[Custom airflow image<br/>chicago-data-pipeline-airflow]
+
+    CUSTOM -->|builds 3 services| AI[airflow-init<br/>one-shot: db migrate]
+    CUSTOM -->|builds 3 services| AW[airflow-webserver<br/>command: api-server]
+    CUSTOM -->|builds 3 services| AS[airflow-scheduler<br/>command: scheduler]
+```
+
+**Why a custom image?** The official Airflow image doesn't include:
+1. **Docker CLI** — needed for DockerOperator (runs Spark jobs in isolated containers via docker.sock)
+2. **Airflow providers** — the official image includes core only. We need:
+   - `apache-airflow-providers-postgres` — PostgresHook, SqlSensor
+   - `apache-airflow-providers-docker` — DockerOperator
+
+**How docker-compose.yml uses it:**
+- `build: ./airflow` in the YAML anchor `x-airflow-common` — all 3 Airflow services share this
+- `<<: *airflow-common` merges the build config into each service
+- The `command:` override differentiates the 3 services:
+  - `airflow-init`: `bash -c "airflow db migrate"` (runs once, exits 0)
+  - `airflow-webserver`: `command: api-server` (serves UI on port 8080)
+  - `airflow-scheduler`: `command: scheduler` (runs task scheduler)
+
+**How airflow/ files are used:**
+
+| File | How it's used | Mount type |
+|---|---|---|
+| `airflow/Dockerfile` | Compose builds the image from this at `docker compose build` time | Build context |
+| `airflow/requirements.txt` | Copied into image during build, installed by uv | Build context |
+| `airflow/passwords.json` | Bind-mounted into container at `/opt/airflow/config/passwords.json` | Bind mount (runtime) |
+| `airflow/dags/` | Bind-mounted into container at `/opt/airflow/dags/` | Bind mount (runtime) |
+
+**Why dags/ is bind-mounted (not baked into image):** You edit DAGs frequently. A bind mount means changes on the host appear instantly in the container — no rebuild needed. If you baked DAGs into the image, you'd need to rebuild every time you change a DAG.
+
+### 4. How docker-compose.yml Ties Everything Together
+
+docker-compose.yml is the **orchestrator** — it defines all 6 services, their dependencies, and how files flow into containers:
+
+```mermaid
+graph TB
+    ENV[.env file]
+    DC[docker-compose.yml]
+    ENV -->|$$VAR interpolated<br/>at compose time| DC
+
+    DC -->|image: postgres:16-alpine| PG[postgres container]
+    DC -->|build: ./spark| SP[spark-master + spark-worker]
+    DC -->|build: ./airflow| AF[airflow-init + webserver + scheduler]
+
+    INIT[init.sql] -->|bind mount: /docker-entrypoint-initdb.d/| PG
+    SJOBS[spark/jobs/] -->|bind mount: /opt/spark/jobs| SP
+    ADAGS[airflow/dags/] -->|bind mount: /opt/airflow/dags| AF
+    APW[airflow/passwords.json] -->|bind mount: /opt/airflow/config/| AF
+    DOCKSOCK[/var/run/docker.sock] -->|bind mount| AF
+
+    PGDATA[(postgres_data<br/>named volume)] -->|persists data| PG
+    AFLOGS[(airflow_logs<br/>named volume)] -->|persists logs| AF
+```
+
+**The two types of volume mounts:**
+
+| Type | Syntax | When to use | Example in this project |
+|---|---|---|---|
+| **Bind mount** | `./host/path:/container/path` | When you want host edits to appear in container immediately | `./airflow/dags:/opt/airflow/dags` |
+| **Named volume** | `volume_name:/container/path` | When you want data to persist but don't need host access | `postgres_data:/var/lib/postgresql/data` |
+
+**The startup order (enforced by `depends_on`):**
+
+```mermaid
+graph LR
+    PG[postgres<br/>healthcheck: pg_isready] -->|service_healthy| AI[airflow-init<br/>runs db migrate]
+    AI -->|service_completed_successfully<br/>exited 0| AW[airflow-webserver<br/>api-server]
+    AI -->|service_completed_successfully<br/>exited 0| AS[airflow-scheduler<br/>scheduler]
+    SM[spark-master<br/>healthcheck: port 8080] -->|service_healthy| SW[spark-worker<br/>connects to master]
+```
+
+This means:
+1. Postgres starts first and must pass `pg_isready` healthcheck
+2. `airflow-init` waits for Postgres to be healthy, then runs `airflow db migrate`, then exits 0
+3. `airflow-webserver` and `airflow-scheduler` wait for `airflow-init` to exit 0, then start
+4. `spark-master` starts independently (no dependency on Postgres or Airflow)
+5. `spark-worker` waits for `spark-master` to be healthy, then connects
+
+### 5. How init.sql Links to Postgres
+
+```mermaid
+graph LR
+    INIT[init.sql on host] -->|docker-compose.yml<br/>bind mount| DIRENTRY[/docker-entrypoint-initdb.d/<br/>inside postgres container]
+    DIRENTRY -->|Postgres runs scripts<br/>in this dir alphabetically<br/>on FIRST startup only| PG[(postgres_data<br/>volume empty?)]
+    PG -->|yes: empty volume| RUN[Execute init.sql<br/>creates schemas + airflow DB]
+    PG -->|no: volume has data| SKIP[Skip init.sql<br/>data already exists]
+```
+
+**How it works:**
+- `./init.sql:/docker-entrypoint-initdb.d/init.sql` — Compose bind-mounts the file into Postgres's init directory
+- The `postgres:16-alpine` image has an entrypoint script that checks: is the data volume empty?
+- If empty (first run): runs all scripts in `/docker-entrypoint-initdb.d/` alphabetically, then starts Postgres
+- If not empty (subsequent runs): skips init scripts entirely, starts Postgres with existing data
+
+**What init.sql creates:**
+- 3 schemas: `raw`, `staging`, `mart` in the `chicago_analytics` database
+- `airflow` user with password `airflow_pass`
+- `airflow_metadata` database owned by `airflow` user
+- Grants: `chicago` user gets full access to all 3 schemas
+
+**If you change init.sql after the first run:** You must destroy the volume and recreate:
+```bash
+docker compose down -v    # WARNING: destroys all data
+docker compose up -d      # volume is empty again, init.sql runs
+```
+
+### 6. How .env Links to docker-compose.yml
+
+```mermaid
+graph LR
+    ENV[.env file<br/>POSTGRES_USER=chicago<br/>AIRFLOW__API__PORT=8080<br/>...]
+    DC[docker-compose.yml<br/>uses ${VAR} syntax]
+    ENV -->|Compose reads .env<br/>and substitutes ${VAR}| DC
+    DC -->|passes values as<br/>environment: block| C1[postgres container]
+    DC -->|passes values as<br/>environment: block| C2[airflow containers]
+```
+
+**How it works:**
+- Compose automatically reads `.env` from the same directory as `docker-compose.yml`
+- Any `${VAR}` in docker-compose.yml is replaced with the value from `.env`
+- Example: `POSTGRES_USER: ${POSTGRES_USER}` becomes `POSTGRES_USER: chicago`
+- The `.env` file is gitignored (contains secrets). `.env.example` is committed as a template
+
+**`$$` vs `$` in Compose commands:**
+- `$VAR` — Compose interpolates from `.env` at compose time (before the container starts)
+- `$$VAR` — escapes to literal `$VAR`, so the container's bash shell expands it at runtime
+- Use `$$` when you need bash to read an env var that was set via the `environment:` block
+
+### 7. How docker.sock Links Airflow to Spark (DockerOperator)
+
+When an Airflow DAG needs to run a Spark job, it uses DockerOperator to spawn a new container:
+
+```mermaid
+graph TB
+    subgraph "Airflow container"
+        DAG[DAG task:<br/>DockerOperator]
+        DOCKERCLI[docker CLI<br/>installed in image]
+        DAG --> DOCKERCLI
+    end
+
+    DOCKSOCK[/var/run/docker.sock<br/>mounted from host]
+    DOCKERCLI -->|talks via| DOCKSOCK
+
+    DOCKSOCK -->|creates sibling container<br/>on host Docker daemon| SPARKJOB[Spark job container<br/>runs spark-submit<br/>on spark-master network]
+
+    SPARKJOB -->|writes results via JDBC| PG[(postgres)]
+```
+
+**How it works:**
+1. The Airflow Dockerfile installs `docker.io` (Docker CLI) into the Airflow image
+2. docker-compose.yml mounts `/var/run/docker.sock` from the host into the Airflow container
+3. When DockerOperator runs, it uses the Docker CLI to talk to the host's Docker daemon via the socket
+4. The daemon creates a **sibling container** (not inside the Airflow container — on the host alongside it)
+5. That sibling container runs the Spark job and writes results to Postgres via JDBC
+
+**Why this pattern?** It keeps Spark jobs isolated — each job runs in a fresh container with clean state. The Airflow container doesn't need Spark installed; it just needs the Docker CLI to spawn containers that do have Spark.
+
+### 8. Complete File → Container Reference
+
+| Host file | Used by | How | When |
+|---|---|---|---|
+| `docker-compose.yml` | Docker Compose | Read by `docker compose up` | Every startup |
+| `.env` | docker-compose.yml | `${VAR}` interpolation | Every startup |
+| `init.sql` | postgres container | Bind mount to `/docker-entrypoint-initdb.d/` | First startup only (empty volume) |
+| `airflow/Dockerfile` | Compose build | `build: ./airflow` | `docker compose build` |
+| `airflow/requirements.txt` | Dockerfile | `COPY` + `uv pip install` | Build time |
+| `airflow/passwords.json` | airflow containers | Bind mount to `/opt/airflow/config/` | Every startup (runtime) |
+| `airflow/dags/*.py` | airflow containers | Bind mount to `/opt/airflow/dags/` | Every startup (runtime, live-edited) |
+| `spark/Dockerfile` | Compose build | `build: ./spark` | `docker compose build` |
+| `spark/jobs/*.py` | spark + airflow containers | Bind mount to `/opt/spark/jobs/` | Every startup (runtime) |
+| `pyproject.toml` | uv (host only) | `uv sync` reads it | Host dev only |
+| `uv.lock` | uv (host only) | `uv sync` reads it | Host dev only |
+| `.venv/` | Host Python | Created by `uv sync` | Host dev only |
+
+---
+
 ## Postgres
 
 ### Useful Commands
@@ -302,6 +603,32 @@ dbt docs generate && dbt docs serve  # generate and view docs
 
 ## Spark
 
+### Docker Image: apache/spark (not bitnami)
+We use the official `apache/spark:3.5.1` image. Bitnami moved their images behind a commercial subscription in 2026 — `docker.io/bitnami/*` is no longer free.
+
+| Concept | bitnami/spark (old) | apache/spark (current) |
+|---|---|---|
+| Start master | `SPARK_MODE=master` env var | `spark-class org.apache.spark.deploy.master.Master` command |
+| Start worker | `SPARK_MODE=worker` + `SPARK_MASTER_URL` env vars | `spark-class org.apache.spark.deploy.worker.Worker spark://master:7077` command |
+| SPARK_HOME | `/opt/bitnami/spark` | `/opt/spark` |
+| JDBC jar path | `/opt/bitnami/spark/jars/` | `/opt/spark/jars/` |
+| Non-root user | UID 1001 | `spark` (UID 185) |
+
+`SPARK_WORKER_CORES` and `SPARK_WORKER_MEMORY` env vars still work in the official image — `spark-class` reads them.
+
+`SPARK_MASTER_HOST=spark-master` is needed in Docker Compose so the master advertises the Docker service name (not a random container hostname) to workers.
+
+### Spark Master Healthcheck in Docker
+Spark master binds ports differently:
+- **RPC port 7077** → binds to the container's Docker network IP (e.g., `172.18.0.2`), NOT `127.0.0.1`
+- **Web UI port 8080** → binds to `0.0.0.0` (all interfaces)
+
+Healthchecks run inside the container. Checking port 7077 on `127.0.0.1` fails because Spark isn't listening there. Always check the Web UI port (8080 inside the container, remapped to 8180 on the host):
+```yaml
+healthcheck:
+  test: ["CMD-SHELL", "python3 -c \"import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1', 8080)); s.close()\""]
+```
+
 ### Useful Commands
 ```bash
 # Submit a batch job
@@ -405,16 +732,137 @@ airflow tasks test crime_batch download_crime 2024-01-15
 | `LocalExecutor` | Parallel tasks on one machine | Phase 1 — good fit | None (uses metadata DB) |
 | `CeleryExecutor` | Distributes tasks across worker machines | Production / heavy workloads | Redis or RabbitMQ + Celery workers |
 
-### Airflow 3.0 Authentication (SimpleAuthManager)
-Airflow 3.0 replaces Flask-AppBuilder (FAB) with SimpleAuthManager as the default auth manager. This is a **breaking change** from 2.x:
+### Airflow 2.x vs 3.x — Comprehensive Comparison
 
-| Concept | Airflow 2.x (FAB) | Airflow 3.0 (SimpleAuthManager) |
+Airflow 3.0 (April 2025) is a major breaking release. 2.x reached EOL in April 2026.
+This table covers every difference that affects Docker setup, CLI commands, config, and daily use.
+
+#### 1. Docker Compose — Service Commands
+
+| Service | Airflow 2.x | Airflow 3.0 | Why it changed |
+|---|---|---|---|
+| Web UI | `command: webserver` | `command: api-server` | Web UI is now served by the API server. `airflow webserver` command is removed. |
+| Scheduler | No command needed (image had default CMD) | `command: scheduler` (explicit) | 3.0 image has no default CMD — entrypoint runs `airflow` with no subcommand if not specified. |
+| Init (migrations) | `bash -c "airflow db upgrade && airflow users create ..."` | `bash -c "airflow db migrate"` | `airflow db upgrade` → `airflow db migrate` (renamed). `airflow users create` removed (SimpleAuthManager). |
+
+#### 2. Docker Compose — Healthcheck
+
+| Aspect | Airflow 2.x | Airflow 3.0 |
 |---|---|---|
-| Create user | `airflow users create --username ... --password ...` | **GONE** — no CLI user creation |
-| Define users | Database-backed | Env var: `AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS=admin:admin,viewer:user1` |
+| Health endpoint | `GET /health` | `GET /api/v2/monitor/health` |
+| Response | JSON with status | JSON: `{"metadatabase": {...}, "scheduler": {...}, ...}` |
+| Compose healthcheck | `curl --fail http://localhost:8080/health` | `curl --fail http://localhost:8080/api/v2/monitor/health` |
+
+#### 3. Configuration — Environment Variables
+
+| Config | Airflow 2.x env var | Airflow 3.0 env var | Notes |
+|---|---|---|---|
+| UI/API port | `AIRFLOW__WEBSERVER__WEB_SERVER_PORT` | `AIRFLOW__API__PORT` | Moved from `[webserver]` section to `[api]` section |
+| DB connection | `AIRFLOW__DATABASE__SQL_ALCHEMY_CONN` | `AIRFLOW__DATABASE__SQL_ALCHEMY_CONN` | Unchanged |
+| Executor | `AIRFLOW__CORE__EXECUTOR` | `AIRFLOW__CORE__EXECUTOR` | Unchanged |
+| Load examples | `AIRFLOW__CORE__LOAD_EXAMPLES` | `AIRFLOW__CORE__LOAD_EXAMPLES` | Unchanged |
+| DAGs paused at creation | `AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION` | `AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION` | Unchanged |
+
+#### 4. Authentication
+
+| Aspect | Airflow 2.x (FAB) | Airflow 3.0 (SimpleAuthManager) |
+|---|---|---|
+| Auth manager | Flask-AppBuilder (FAB) — default | SimpleAuthManager — new default |
+| Create user | `airflow users create --username admin --password admin --role Admin --email ...` | **GONE** — no CLI user creation |
+| Define users | Database-backed (created via CLI) | Env var: `AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS=admin:admin,viewer:user1` |
 | Passwords | Database-backed | JSON file: `AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE=/path/to/passwords.json` |
-| Roles | Created via CLI | Predefined: `viewer`, `user`, `op`, `admin` (assigned in env var) |
 | Passwords file format | N/A | `{"admin": "admin", "user1": "pass1"}` |
+| Roles | Created via CLI (`Admin`, `User`, `Viewer`, `Op`) | Predefined: `viewer`, `user`, `op`, `admin` (assigned in env var) |
+| File permissions | N/A | `chmod 666` — SimpleAuthManager opens with `a+` mode; airflow user (UID 50000) needs write access |
+| Switch to FAB | N/A (already FAB) | Install `apache-airflow-providers-fab`, set `AIRFLOW__CORE__AUTH_MANAGER=airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager` |
+
+#### 5. CLI Commands
+
+| Command | Airflow 2.x | Airflow 3.0 | Notes |
+|---|---|---|---|
+| Start web UI | `airflow webserver` | `airflow api-server` | `webserver` command removed |
+| Start scheduler | `airflow scheduler` | `airflow scheduler` | Unchanged (but must be explicit in Docker) |
+| DB migration | `airflow db upgrade` | `airflow db migrate` | Renamed; `db upgrade` shows deprecation warning |
+| Create user | `airflow users create ...` | **REMOVED** | Use SimpleAuthManager env vars + passwords.json |
+| List DAGs | `airflow dags list` | `airflow dags list` | Unchanged |
+| Trigger DAG | `airflow dags trigger <dag_id>` | `airflow dags trigger <dag_id>` | Unchanged |
+| Test task | `airflow tasks test <dag> <task> <date>` | `airflow tasks test <dag> <task> <date>` | Unchanged |
+| Check version | `airflow version` | `airflow version` | Unchanged |
+
+#### 6. Docker Image Behavior
+
+| Aspect | Airflow 2.x image | Airflow 3.0 image |
+|---|---|---|
+| Default CMD | Had a default CMD (scheduler or webserver depending on image variant) | **No default CMD** — entrypoint runs `airflow` with no subcommand, crashes with "arguments required" |
+| Entrypoint | `/usr/bin/dumb-init -- /entrypoint` | Same |
+| User | `airflow` (UID 50000) | Same |
+| Python | 3.11 available | Same |
+| Image tag | `apache/airflow:2.x.x-python3.11` | `apache/airflow:3.0.0-python3.11` |
+
+#### 7. Full Docker Compose Side-by-Side (Airflow services only)
+
+```yaml
+# ============ Airflow 2.x ============
+airflow-init:
+  command: >
+    bash -c "
+    airflow db upgrade
+    airflow users create --username admin --password admin --role Admin --email admin@example.com --firstname Admin --lastname User || true
+    "
+
+airflow-webserver:
+  command: webserver
+  ports:
+    - "8080:8080"
+  healthcheck:
+    test: ["CMD-SHELL", "curl --fail http://localhost:8080/health"]
+
+airflow-scheduler:
+  # No command needed — image has default CMD
+  # (healthcheck optional)
+
+
+# ============ Airflow 3.0 ============
+airflow-init:
+  command: >
+    bash -c "
+    airflow db migrate
+    "
+  # No user creation — SimpleAuthManager handles it via env vars
+
+airflow-webserver:
+  command: api-server
+  ports:
+    - "8080:8080"
+  healthcheck:
+    test: ["CMD-SHELL", "curl --fail http://localhost:8080/api/v2/monitor/health"]
+
+airflow-scheduler:
+  command: scheduler          # MUST be explicit — no default CMD in 3.0 image
+```
+
+#### 8. DAG Writing Changes
+
+| Aspect | Airflow 2.x | Airflow 3.0 |
+|---|---|---|
+| DAG definition | `with DAG(...)` or `dag = DAG(...)` | Same — DAG API is backward compatible |
+| `schedule` param | `schedule_interval="@daily"` | `schedule="@daily"` (`schedule_interval` deprecated, still works) |
+| `start_date` | `datetime(2024, 1, 1)` | Same — always fixed past date, never `datetime.now()` |
+| `catchup` | `catchup=False` | Same |
+| Task dependencies | `task1 >> task2` | Same |
+| `@dag` decorator | Available | Available (preferred in 3.0) |
+| Asset-based scheduling | Not available | New in 3.0 — DAGs can trigger when assets (datasets) are updated |
+
+#### 9. What Did NOT change
+
+- `AIRFLOW__DATABASE__SQL_ALCHEMY_CONN` — same env var, same format
+- `AIRFLOW__CORE__EXECUTOR` — same env var
+- `AIRFLOW__CORE__LOAD_EXAMPLES` — same env var
+- DAG Python API — backward compatible (old DAGs work in 3.0)
+- `airflow dags list`, `airflow dags trigger`, `airflow tasks test` — same CLI
+- Docker socket mount for DockerOperator — same pattern
+- YAML anchors for sharing config — same pattern
+- `depends_on: condition: service_completed_successfully` — same Compose feature
 
 **Switching back to FAB auth** (if you need database-backed users):
 ```bash
