@@ -19,32 +19,32 @@ A data engineering learning project that answers: **Does crime near a Divvy bike
 ## Data Sources
 
 - **Chicago Crime** — Socrata API, ~8M rows, daily batch drops ([data portal](https://data.cityofchicago.org/Public-Safety/Crimes-2001-to-Present/ijzp-q4t2))
-- **Divvy Bike Share** — GBFS live API, station status every ~60s ([feed](https://gbfs.divvybikes.com/gbfs/gbfs.json))
+- **Divvy Bike Share** — GBFS live API, station status every ~60s ([feed](https://gbfs.divvybikes.com/gbfs.json))
 
 ## Architecture
 
 ```mermaid
 graph LR
     subgraph Sources
-        CC[Chicago Crime API<br/>Socrata ~8M rows]
-        DV[Divvy GBFS API<br/>~60s refresh]
+        CC["Chicago Crime API<br/>Socrata ~8M rows"]
+        DV["Divvy GBFS API<br/>~60s refresh"]
     end
 
-    CC -->|batch CSV/parquet| SP[Spark Batch]
+    CC -->|"batch CSV/parquet"| SP[Spark Batch]
     DV -->|live stream| KP[Kafka Producer]
     KP --> KT[(Kafka Topic)]
     KT --> SS[Spark Structured Streaming]
 
-    SP --> PG[(Postgres<br/>raw schema)]
+    SP --> PG[("Postgres<br/>raw schema")]
     SS --> PG
 
-    PG --> DBT[DBT<br/>staging → marts]
-    DBT --> PG2[(Postgres<br/>mart schema)]
+    PG --> DBT["DBT<br/>staging to marts"]
+    DBT --> PG2[("Postgres<br/>mart schema")]
 
-    PG2 --> GR[Grafana<br/>dashboards]
-    PG2 --> BI[BI / Analytics]
+    PG2 --> GR["Grafana<br/>dashboards"]
+    PG2 --> BI["BI / Analytics"]
 
-    AF[Airflow<br/>orchestration] -.-> SP
+    AF["Airflow<br/>orchestration"] -.-> SP
     AF -.-> DBT
     AF -.-> KP
 
@@ -59,18 +59,18 @@ graph LR
 
 ```mermaid
 flowchart TD
-    A[Download Crime Data<br/>Socrata API] --> B[Spark Batch Job<br/>clean + transform]
-    B --> C[Postgres raw.crime_events]
-    C --> D[DBT Staging<br/>stg_crime_events]
-    D --> E[DBT Marts<br/>fact_crime_events]
-    E --> F[DBT Tests<br/>quality checks]
-    F --> G[Grafana / Analytics]
+    A["Download Crime Data<br/>Socrata API"] --> B["Spark Batch Job<br/>clean + transform"]
+    B --> C["Postgres raw.crime_events"]
+    C --> D["DBT Staging<br/>stg_crime_events"]
+    D --> E["DBT Marts<br/>fact_crime_events"]
+    E --> F["DBT Tests<br/>quality checks"]
+    F --> G["Grafana / Analytics"]
 
-    H[Divvy GBFS API] --> I[Kafka Producer]
-    I --> J[Kafka Topic]
+    H["Divvy GBFS API"] --> I[Kafka Producer]
+    I --> J[(Kafka Topic)]
     J --> K[Spark Streaming]
-    K --> L[Postgres raw.station_status]
-    L --> M[DBT Staging + Marts]
+    K --> L["Postgres raw.station_status"]
+    L --> M["DBT Staging + Marts"]
     M --> G
 
     style A fill:#f9d0c4
@@ -82,14 +82,14 @@ flowchart TD
 
 ```mermaid
 graph LR
-    P1[Phase 1<br/>Batch Foundation<br/>Postgres + Spark + DBT + Airflow]
-    P2[Phase 2<br/>Live Stream<br/>Kafka + Spark Streaming]
-    P3[Phase 3<br/>Observability<br/>Grafana + DBT Tests + SLAs]
-    P4[Phase 4<br/>Cloud Migration<br/>Terraform + BigQuery + Airbyte]
+    P1["Phase 1<br/>Batch Foundation<br/>Postgres + Spark + DBT + Airflow"]
+    P2["Phase 2<br/>Live Stream<br/>Kafka + Spark Streaming"]
+    P3["Phase 3<br/>Observability<br/>Grafana + DBT Tests + SLAs"]
+    P4["Phase 4<br/>Cloud Migration<br/>Terraform + BigQuery + Airbyte"]
 
-    P1 -->|done when: docker compose up<br/>DAG runs, marts queryable| P2
-    P2 -->|done when: live Divvy data<br/>in Postgres via Kafka| P3
-    P3 -->|done when: dashboards + tests<br/>+ SLAs operational| P4
+    P1 -->|"done when: docker compose up<br/>DAG runs, marts queryable"| P2
+    P2 -->|"done when: live Divvy data<br/>in Postgres via Kafka"| P3
+    P3 -->|"done when: dashboards + tests<br>+ SLAs operational"| P4
 
     style P1 fill:#fff3cd,stroke:#e8c84c
     style P2 fill:#f0f0f0,stroke:#999
@@ -97,7 +97,21 @@ graph LR
     style P4 fill:#f0f0f0,stroke:#999
 ```
 
-> **Status:** Phase 1 — planning complete, implementation not started
+## Progress
+
+### Phase 1 — Batch Foundation
+
+| Sub-Phase | Status | What was built |
+|---|---|---|
+| **1.1 Docker Compose** | **Complete** | 6 services: Postgres, Spark (master+worker), Airflow 3.0 (init+webserver+scheduler). All running and verified healthy. |
+| 1.2 Ingestion | Not started | Socrata API script to download Chicago crime data into Postgres `raw` schema |
+| 1.3 Spark batch | Not started | Transform raw crime data, write to Postgres |
+| 1.4 DBT models | Not started | Staging + mart transformations |
+| 1.5 Airflow DAG | Not started | Orchestrate the full pipeline end-to-end |
+
+**Phase 1 is done when:** `docker compose up` → DAG runs → DBT marts queryable.
+
+See `docs/phases/phase-1.1-docker.md` for the Phase 1.1 completion document with architecture diagrams, errors hit, and verification.
 
 ## Phased Build
 
@@ -106,28 +120,113 @@ graph LR
 3. **Observability** — Grafana dashboards, DBT tests, Airflow SLAs
 4. **Cloud migration** — Terraform → BigQuery + GCS, Airbyte ingestion
 
-Each phase is a working system before the next begins.
+Each phase is a working system before the next begins. See `AGENTS.md` for phase gates.
 
 ## Project Structure
 
 ```
 chicago-data-pipeline/
-├── docker-compose.yml
-├── ingestion/          # Socrata + GBFS data pull
-├── spark/              # batch + streaming jobs
-├── kafka/              # Divvy producer
-├── airflow/            # DAGs
-├── dbt/                # staging → intermediate → marts
-├── grafana/            # dashboards (Phase 3)
-├── terraform/          # cloud infra (Phase 4)
-└── docs/               # conventions + learning protocol
+├── .env.example              # env var template (copy to .env)
+├── .gitignore
+├── AGENTS.md                 # AI assistant rules + phase gates
+├── README.md                 # this file
+├── changelog.md              # errors, fixes, lessons (read before working)
+├── chicago-pipeline-plan.md  # full phased design
+├── docker-compose.yml        # 6 services: Postgres, Spark, Airflow
+├── init.sql                  # Postgres init: 3 schemas + airflow DB
+├── pyproject.toml            # uv project mode (host Python)
+├── uv.lock                   # reproducible installs
+├── airflow/
+│   ├── Dockerfile            # Airflow 3.0 + Docker CLI + providers
+│   ├── passwords.json        # SimpleAuthManager passwords
+│   ├── requirements.txt      # postgres + docker providers
+│   └── dags/                 # DAG files (empty — Phase 1.5)
+├── spark/
+│   ├── Dockerfile            # apache/spark:3.5.1 + PostgreSQL JDBC
+│   └── jobs/                 # PySpark scripts (empty — Phase 1.3)
+├── chat-history/             # conversation reference (read current-state.md first)
+│   ├── README.md
+│   ├── current-state.md      # handoff doc for new sessions
+│   └── 2026-07-*/            # date-sorted topic chunks
+└── docs/
+    ├── knowledge.md               # reference: commands, syntax, architecture
+    ├── learning-protocol.md       # Socratic mode rules
+    ├── operations-performed.md    # audit trail of what was built
+    ├── phases/                    # phase-completion docs (one per sub-phase)
+    │   ├── README.md
+    │   ├── TEMPLATE.md
+    │   └── phase-1.1-docker.md
+    └── conventions/
+        ├── airflow.md
+        ├── dbt.md
+        ├── docker.md
+        └── spark.md
 ```
 
 ## Getting Started
 
+### Prerequisites
+
+- Docker Desktop with WSL2 backend
+- WSL2 (Ubuntu) — project lives on the WSL filesystem (`~/chicago-data-pipeline/`)
+- [uv](https://docs.astral.sh/uv/) installed on host
+
+### First run
+
 ```bash
-cp .env.example .env    # fill in credentials
-docker compose up -d    # start all services
+# 1. Clone and enter
+git clone <repo-url> && cd chicago-data-pipeline
+
+# 2. Copy env template and fill in values
+cp .env.example .env
+
+# 3. Set passwords.json permissions (SimpleAuthManager needs write access)
+chmod 666 airflow/passwords.json
+
+# 4. Build custom images (Airflow + Spark)
+docker compose build
+
+# 5. Start all services
+docker compose up -d
+
+# 6. Verify all services are healthy
+docker compose ps -a
 ```
 
-See `chicago-pipeline-plan.md` for the full design and `docs/` for engineering conventions.
+### Accessing services
+
+| Service | URL | Login |
+|---|---|---|
+| Airflow UI | http://localhost:8080 | admin / admin |
+| Spark Master UI | http://localhost:8180 | — |
+| Spark Worker UI | http://localhost:8081 | — |
+| Postgres | localhost:5432 | chicago / (from .env) |
+
+### Host Python (for dev scripts)
+
+```bash
+source .venv/bin/activate    # activate uv venv
+uv sync                      # install deps from lockfile
+```
+
+### Useful commands
+
+```bash
+docker compose logs -f airflow-webserver   # tail logs
+docker compose exec postgres psql -U chicago -d chicago_analytics  # psql shell
+docker compose down                        # stop (preserves data)
+docker compose down -v                     # stop + WIPE all data
+```
+
+## Documentation
+
+| Doc | What it covers |
+|---|---|
+| `AGENTS.md` | AI assistant rules, phase gates, tech stack |
+| `changelog.md` | Every error hit, root cause, and fix |
+| `docs/knowledge.md` | Reference: commands, syntax, architecture diagrams, Airflow 2.x vs 3.x comparison |
+| `docs/operations-performed.md` | Audit trail: what files were created and why |
+| `docs/learning-protocol.md` | How the AI assistant interacts with you (Socratic mode) |
+| `docs/phases/` | Phase-completion docs with architecture, errors, and verification |
+| `chat-history/current-state.md` | Handoff doc — read first in a new session |
+| `chicago-pipeline-plan.md` | Full phased design and plan |

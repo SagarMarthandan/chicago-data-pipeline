@@ -194,23 +194,17 @@ This section explains how every file in the repo connects to Docker, how uv link
 
 ```mermaid
 graph TB
-    subgraph "Host filesystem (~/chicago-data-pipeline/)"
-        DC[docker-compose.yml]
-        ENV[.env]
-        INIT[init.sql]
-        PYPROJ[pyproject.toml + uv.lock]
-        VENV[.venv/]
-        subgraph "airflow/"
-            ADF[airflow/Dockerfile]
-            AREQ[airflow/requirements.txt]
-            APW[airflow/passwords.json]
-            ADAGS[airflow/dags/]
-        end
-        subgraph "spark/"
-            SDF[spark/Dockerfile]
-            SJOBS[spark/jobs/]
-        end
-    end
+    DC[docker-compose.yml]
+    ENV[".env"]
+    INIT[init.sql]
+    PYPROJ["pyproject.toml + uv.lock"]
+    VENV[".venv/"]
+    ADF[airflow/Dockerfile]
+    AREQ[airflow/requirements.txt]
+    APW[airflow/passwords.json]
+    ADAGS["airflow/dags/"]
+    SDF[spark/Dockerfile]
+    SJOBS["spark/jobs/"]
 
     DC -->|builds image from| ADF
     DC -->|builds image from| SDF
@@ -232,7 +226,7 @@ graph LR
         UV1[uv binary]
         PP[pyproject.toml]
         UL[uv.lock]
-        VENV[.venv/]
+        VENV[".venv/"]
         UV1 -->|uv sync reads| UL
         UL -->|installs into| VENV
         PP -->|declares deps| UL
@@ -241,7 +235,7 @@ graph LR
     subgraph "Airflow container (build time)"
         UV2[uv binary<br/>COPY --from=uv image]
         AREQ[requirements.txt]
-        SITE[/usr/local/lib/<br/>python3.11/<br/>site-packages/]
+        SITE["/usr/local/lib/<br/>python3.11/<br/>site-packages/"]
         UV2 -->|uv pip install --system| SITE
         AREQ -->|lists packages| UV2
     end
@@ -271,7 +265,7 @@ The Spark image is built from `spark/Dockerfile`. It starts from the official `a
 ```mermaid
 graph TB
     BASE[apache/spark:3.5.1<br/>official image]
-    DOWNLOAD[Download postgresql-42.7.3.jar<br/>to /opt/spark/jars/]
+    DOWNLOAD["Download postgresql-42.7.3.jar<br/>to /opt/spark/jars/"]
     BASE --> DOWNLOAD
     DOWNLOAD --> CUSTOM[Custom spark image<br/>chicago-data-pipeline-spark]
 
@@ -349,17 +343,17 @@ docker-compose.yml is the **orchestrator** — it defines all 6 services, their 
 graph TB
     ENV[.env file]
     DC[docker-compose.yml]
-    ENV -->|$$VAR interpolated<br/>at compose time| DC
+    ENV -->|"$$VAR interpolated<br/>at compose time"| DC
 
     DC -->|image: postgres:16-alpine| PG[postgres container]
     DC -->|build: ./spark| SP[spark-master + spark-worker]
     DC -->|build: ./airflow| AF[airflow-init + webserver + scheduler]
 
     INIT[init.sql] -->|bind mount: /docker-entrypoint-initdb.d/| PG
-    SJOBS[spark/jobs/] -->|bind mount: /opt/spark/jobs| SP
-    ADAGS[airflow/dags/] -->|bind mount: /opt/airflow/dags| AF
+    SJOBS["spark/jobs/"] -->|bind mount: /opt/spark/jobs| SP
+    ADAGS["airflow/dags/"] -->|bind mount: /opt/airflow/dags| AF
     APW[airflow/passwords.json] -->|bind mount: /opt/airflow/config/| AF
-    DOCKSOCK[/var/run/docker.sock] -->|bind mount| AF
+    DOCKSOCK["/var/run/docker.sock"] -->|bind mount| AF
 
     PGDATA[(postgres_data<br/>named volume)] -->|persists data| PG
     AFLOGS[(airflow_logs<br/>named volume)] -->|persists logs| AF
@@ -393,7 +387,7 @@ This means:
 
 ```mermaid
 graph LR
-    INIT[init.sql on host] -->|docker-compose.yml<br/>bind mount| DIRENTRY[/docker-entrypoint-initdb.d/<br/>inside postgres container]
+    INIT[init.sql on host] -->|"docker-compose.yml<br/>bind mount"| DIRENTRY["/docker-entrypoint-initdb.d/<br/>inside postgres container"]
     DIRENTRY -->|Postgres runs scripts<br/>in this dir alphabetically<br/>on FIRST startup only| PG[(postgres_data<br/>volume empty?)]
     PG -->|yes: empty volume| RUN[Execute init.sql<br/>creates schemas + airflow DB]
     PG -->|no: volume has data| SKIP[Skip init.sql<br/>data already exists]
@@ -421,9 +415,9 @@ docker compose up -d      # volume is empty again, init.sql runs
 
 ```mermaid
 graph LR
-    ENV[.env file<br/>POSTGRES_USER=chicago<br/>AIRFLOW__API__PORT=8080<br/>...]
-    DC[docker-compose.yml<br/>uses ${VAR} syntax]
-    ENV -->|Compose reads .env<br/>and substitutes ${VAR}| DC
+    ENV[".env file<br/>POSTGRES_USER=chicago<br/>AIRFLOW__API__PORT=8080<br/>..."]
+    DC["docker-compose.yml<br/>uses ${VAR} syntax"]
+    ENV -->|"Compose reads .env<br/>and substitutes ${VAR}"| DC
     DC -->|passes values as<br/>environment: block| C1[postgres container]
     DC -->|passes values as<br/>environment: block| C2[airflow containers]
 ```
@@ -451,7 +445,7 @@ graph TB
         DAG --> DOCKERCLI
     end
 
-    DOCKSOCK[/var/run/docker.sock<br/>mounted from host]
+    DOCKSOCK["/var/run/docker.sock<br/>mounted from host"]
     DOCKERCLI -->|talks via| DOCKSOCK
 
     DOCKSOCK -->|creates sibling container<br/>on host Docker daemon| SPARKJOB[Spark job container<br/>runs spark-submit<br/>on spark-master network]
