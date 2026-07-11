@@ -264,16 +264,16 @@ The Spark image is built from `spark/Dockerfile`. It starts from the official `a
 
 ```mermaid
 graph TB
-    BASE[apache/spark:3.5.1<br/>official image]
+    BASE["apache/spark:3.5.1<br/>official image"]
     DOWNLOAD["Download postgresql-42.7.3.jar<br/>to /opt/spark/jars/"]
     BASE --> DOWNLOAD
-    DOWNLOAD --> CUSTOM[Custom spark image<br/>chicago-data-pipeline-spark]
+    DOWNLOAD --> CUSTOM["Custom spark image<br/>chicago-data-pipeline-spark"]
 
-    CUSTOM -->|docker-compose.yml builds| SM[spark-master container]
-    CUSTOM -->|docker-compose.yml builds| SW[spark-worker container]
+    CUSTOM -->|"docker-compose.yml builds"| SM["spark-master container"]
+    CUSTOM -->|"docker-compose.yml builds"| SW["spark-worker container"]
 
-    SM -->|command: spark-class<br/>org.apache.spark.deploy.<br/>master.Master| MASTER[Master process<br/>UI: port 8180<br/>RPC: port 7077]
-    SW -->|command: spark-class<br/>org.apache.spark.deploy.<br/>worker.Worker<br/>spark://spark-master:7077| WORKER[Worker process<br/>connects to master<br/>UI: port 8081]
+    SM -->|"command: spark-class<br/>org.apache.spark.deploy.<br/>master.Master"| MASTER["Master process<br/>UI: port 8180<br/>RPC: port 7077"]
+    SW -->|"command: spark-class<br/>org.apache.spark.deploy.<br/>worker.Worker<br/>spark://spark-master:7077"| WORKER["Worker process<br/>connects to master<br/>UI: port 8081"]
 ```
 
 **Why a custom image?** The official `apache/spark` image doesn't include the PostgreSQL JDBC driver. Without it, `df.write.format("jdbc")` throws `ClassNotFoundException`. Baking the JAR into the image means:
@@ -298,16 +298,16 @@ The Airflow image is built from `airflow/Dockerfile`. It starts from `apache/air
 
 ```mermaid
 graph TB
-    BASE[apache/airflow:3.0.0-python3.11<br/>official image]
-    DOCKER[Install docker.io CLI<br/>apt-get install]
-    UVCOPY[COPY uv binary<br/>from ghcr.io/astral-sh/uv]
-    PROVIDERS[Install providers<br/>uv pip install --system<br/>-r requirements.txt]
+    BASE["apache/airflow:3.0.0-python3.11<br/>official image"]
+    DOCKER["Install docker.io CLI<br/>apt-get install"]
+    UVCOPY["COPY uv binary<br/>from ghcr.io/astral-sh/uv"]
+    PROVIDERS["Install providers<br/>uv pip install --system<br/>-r requirements.txt"]
     BASE --> DOCKER --> UVCOPY --> PROVIDERS
-    PROVIDERS --> CUSTOM[Custom airflow image<br/>chicago-data-pipeline-airflow]
+    PROVIDERS --> CUSTOM["Custom airflow image<br/>chicago-data-pipeline-airflow"]
 
-    CUSTOM -->|builds 3 services| AI[airflow-init<br/>one-shot: db migrate]
-    CUSTOM -->|builds 3 services| AW[airflow-webserver<br/>command: api-server]
-    CUSTOM -->|builds 3 services| AS[airflow-scheduler<br/>command: scheduler]
+    CUSTOM -->|"builds 3 services"| AI["airflow-init<br/>one-shot: db migrate"]
+    CUSTOM -->|"builds 3 services"| AW["airflow-webserver<br/>command: api-server"]
+    CUSTOM -->|"builds 3 services"| AS["airflow-scheduler<br/>command: scheduler"]
 ```
 
 **Why a custom image?** The official Airflow image doesn't include:
@@ -370,10 +370,10 @@ graph TB
 
 ```mermaid
 graph LR
-    PG[postgres<br/>healthcheck: pg_isready] -->|service_healthy| AI[airflow-init<br/>runs db migrate]
-    AI -->|service_completed_successfully<br/>exited 0| AW[airflow-webserver<br/>api-server]
-    AI -->|service_completed_successfully<br/>exited 0| AS[airflow-scheduler<br/>scheduler]
-    SM[spark-master<br/>healthcheck: port 8080] -->|service_healthy| SW[spark-worker<br/>connects to master]
+    PG["postgres<br/>healthcheck: pg_isready"] -->|service_healthy| AI["airflow-init<br/>runs db migrate"]
+    AI -->|"service_completed_successfully<br/>exited 0"| AW["airflow-webserver<br/>api-server"]
+    AI -->|"service_completed_successfully<br/>exited 0"| AS["airflow-scheduler<br/>scheduler"]
+    SM["spark-master<br/>healthcheck: port 8080"] -->|service_healthy| SW["spark-worker<br/>connects to master"]
 ```
 
 This means:
@@ -440,7 +440,7 @@ When an Airflow DAG needs to run a Spark job, it uses DockerOperator to spawn a 
 ```mermaid
 graph TB
     subgraph "Airflow container"
-        DAG[DAG task:<br/>DockerOperator]
+        DAG["DAG task:<br/>DockerOperator"]
         DOCKERCLI[docker CLI<br/>installed in image]
         DAG --> DOCKERCLI
     end

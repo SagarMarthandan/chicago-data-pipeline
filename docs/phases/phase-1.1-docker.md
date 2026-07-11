@@ -28,12 +28,12 @@ Built the full Docker Compose stack: Postgres (warehouse + Airflow metadata), Sp
 ```mermaid
 graph TB
     subgraph "docker-compose.yml — 6 services"
-        PG[postgres:16-alpine<br/>chicago_analytics + airflow_metadata<br/>3 schemas: raw, staging, mart]
-        SM[spark-master<br/>apache/spark:3.5.1 + JDBC<br/>UI: :8180]
-        SW[spark-worker<br/>same image<br/>UI: :8081]
-        AI[airflow-init<br/>one-shot: db migrate<br/>exits 0]
-        AW[airflow-webserver<br/>api-server<br/>UI: :8080]
-        AS[airflow-scheduler<br/>scheduler]
+        PG["postgres:16-alpine<br/>chicago_analytics + airflow_metadata<br/>3 schemas: raw, staging, mart"]
+        SM["spark-master<br/>apache/spark:3.5.1 + JDBC<br/>UI: :8180"]
+        SW["spark-worker<br/>same image<br/>UI: :8081"]
+        AI["airflow-init<br/>one-shot: db migrate<br/>exits 0"]
+        AW["airflow-webserver<br/>api-server<br/>UI: :8080"]
+        AS["airflow-scheduler<br/>scheduler"]
     end
 
     PG -->|service_healthy| AI
