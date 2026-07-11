@@ -93,7 +93,7 @@ These were discovered during `docker compose up` and are now resolved:
 │   └── raw/crime/crime_2023.parquet ← 263K rows, 11.5 MB
 ├── chat-history/             ← THIS FOLDER — conversation reference
 └── docs/
-    ├── knowledge.md          ← reference commands, syntax, concepts, architecture
+    ├── knowledge/            ← reference (one file per topic, see index.md)
     ├── learning-protocol.md  ← Socratic mode rules
     ├── operations-performed.md ← audit trail of what was built
     ├── phases/               ← phase-completion docs (one per sub-phase)
@@ -124,7 +124,7 @@ Phase 1.1 (Docker) and Phase 1.2 (Ingestion) are **complete and verified**. Next
 
 - **Phase gates:** Phase 2 locked until Phase 1 works end-to-end and is verified. Do NOT skip ahead.
 - **Learning protocol:** Socratic by default. User must say "write the code" to get code. Currently in AI-writes-code mode.
-- **Three-doc system:** `changelog.md` (errors), `docs/knowledge.md` (reference), `docs/operations-performed.md` (audit trail). Update all three after every change.
+- **Three-doc system:** `changelog.md` (errors), `docs/knowledge/` (reference, one file per topic), `docs/operations-performed.md` (audit trail). Update all three after every change.
 - **Phase-completion docs:** After each sub-phase is verified, create `docs/phases/phase-X.Y-<name>.md` from `TEMPLATE.md`. Include section-by-section mermaid diagrams showing how files connect. See `docs/phases/README.md`.
 - **Chat-history system:** Update `chat-history/` when context approaches 75%. Update `current-state.md` at the end of each session.
 - **Stable versions only:** User wants non-experimental, production-hardened versions.

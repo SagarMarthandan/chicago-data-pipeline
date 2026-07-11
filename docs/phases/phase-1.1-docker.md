@@ -42,7 +42,7 @@ graph TB
     SM -->|service_healthy| SW
 ```
 
-**For detailed architecture diagrams** (how uv links to Docker, how Spark/Airflow images are built, how init.sql runs, how docker.sock connects Airflow to Spark, file-to-container mapping), see the **"How Everything Connects"** section in `docs/knowledge.md`. That section is the permanent reference; this doc is the phase snapshot.
+**For detailed architecture diagrams** (how uv links to Docker, how Spark/Airflow images are built, how init.sql runs, how docker.sock connects Airflow to Spark, file-to-container mapping), see `docs/knowledge/architecture.md`. That file is the permanent reference; this doc is the phase snapshot.
 
 ## Errors Hit
 

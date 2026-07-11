@@ -149,7 +149,7 @@ chicago-data-pipeline/
 │   ├── current-state.md      # handoff doc for new sessions
 │   └── 2026-07-*/            # date-sorted topic chunks
 └── docs/
-    ├── knowledge.md               # reference: commands, syntax, architecture
+    ├── knowledge/               # reference: one file per topic (index.md for directory)
     ├── learning-protocol.md       # Socratic mode rules
     ├── operations-performed.md    # audit trail of what was built
     ├── phases/                    # phase-completion docs (one per sub-phase)
@@ -224,7 +224,7 @@ docker compose down -v                     # stop + WIPE all data
 |---|---|
 | `AGENTS.md` | AI assistant rules, phase gates, tech stack |
 | `changelog.md` | Every error hit, root cause, and fix |
-| `docs/knowledge.md` | Reference: commands, syntax, architecture diagrams, Airflow 2.x vs 3.x comparison |
+| `docs/knowledge/` | Reference: one file per topic — commands, syntax, architecture diagrams, Airflow 2.x vs 3.x comparison. See `index.md` for directory. |
 | `docs/operations-performed.md` | Audit trail: what files were created and why |
 | `docs/learning-protocol.md` | How the AI assistant interacts with you (Socratic mode) |
 | `docs/phases/` | Phase-completion docs with architecture, errors, and verification |

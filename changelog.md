@@ -4,6 +4,23 @@ A running log of changes, errors, and fixes throughout the project. Use this to 
 
 > **Format:** `YYYY-MM-DD` — what happened, what broke, what fixed it, and the lesson.
 
+## Table of Contents
+
+- [2026-07-08 — Project Setup (Windows → WSL migration)](#2026-07-08--project-setup-windows--wsl-migration)
+- [2026-07-08 — Documentation & Repo Finalization](#2026-07-08--documentation--repo-finalization)
+- [2026-07-09 — Phase 1.1 Docker Setup (started)](#2026-07-09--phase-11-docker-setup-started)
+- [2026-07-09 — Phase 1.1 init.sql created](#2026-07-09--phase-11-initsql-created)
+- [2026-07-09 — Schema architecture decision (3-layer)](#2026-07-09--schema-architecture-decision-3-layer)
+- [2026-07-09 — docker-compose.yml + Dockerfiles created](#2026-07-09--docker-composeyml--dockerfiles-created)
+- [2026-07-09 — Migrated from uv venv to uv init](#2026-07-09--migrated-from-uv-venv-to-uv-init-project-mode)
+- [2026-07-09 — uv pip install in Airflow Dockerfile](#2026-07-09--uv-pip-install-in-airflow-dockerfile)
+- [2026-07-09 — Upgraded Airflow 2.8.4 → 3.0.0](#2026-07-09--upgraded-airflow-284--300)
+- [2026-07-09 — Bitnami Spark image not found](#2026-07-09--bitnami-spark-image-not-found--switched-to-apachespark)
+- [2026-07-09 — Airflow Dockerfile permission denied](#2026-07-09--airflow-dockerfile-permission-denied-during-uv-pip-install)
+- [2026-07-09 — Airflow 3.0 runtime breaking changes](#2026-07-09--airflow-30-runtime-breaking-changes-webserver-scheduler-health-permissions)
+- [2026-07-11 — Phase 1.2: Ingestion script errors](#2026-07-11--phase-12-ingestion-script-errors)
+- [2026-07-11 — Mermaid diagram rendering errors](#2026-07-11--mermaid-diagram-rendering-errors-across-md-files)
+
 ---
 
 ## 2026-07-08 — Project Setup (Windows → WSL migration)
@@ -318,6 +335,27 @@ Four issues discovered during `docker compose up`:
 - **Always verify API endpoints before writing code** — the plan's resource ID (`ijzp-q4t2`) was a typo. The Socrata catalog API (`api.us.socrata.com/api/catalog/v1?q=...`) can confirm the correct ID.
 - **Socrata API returns nested `location` dict and `:@computed_region_*` columns** — the `location` column duplicates `latitude`/`longitude`, and computed region columns are internal geocoding metadata. Both should be dropped during cleaning.
 - **Data directory must be mounted into Spark containers** — Parquet files written by the host ingestion script need to be accessible inside Spark containers via a bind mount.
+
+---
+
+## 2026-07-11 — Mermaid diagram rendering errors across .md files
+
+### Errors
+
+| # | Error | Root Cause | Fix |
+|---|---|---|---|
+| 1 | Parallelogram shape collision — `[/text/]` interpreted as parallelogram, not text | Mermaid treats `[/.../]` as a parallelogram shape syntax, not a label with slashes | Quoted all labels containing `/`: `NODE["/path/..."]` |
+| 2 | Slash-bracket ending — `text/]` breaks rendering | `/]` without quotes confuses the parser | Quoted all labels ending with `/`: `NODE["name/"]` |
+| 3 | `${VAR}` in labels breaks parsing | Curly braces are special syntax in mermaid | Quoted labels and edge labels containing `${...}` |
+| 4 | `$$` in edge labels breaks parsing | Double dollar signs are special syntax | Quoted edge labels: `\|"$$VAR..."\|` |
+| 5 | Unquoted colons in node labels break rendering | Colons in `NODE[text:text]` confuse some mermaid parsers | Quoted all labels containing `:`: `NODE["text:text"]` |
+
+**Files affected:** `docs/knowledge.md` (9 diagrams), `docs/phases/phase-1.1-docker.md` (1 diagram), `README.md` (3 diagrams)
+
+### Lessons
+- **Always quote mermaid node labels containing special characters** — `/`, `:`, `$`, `{`, `}` all break rendering when unquoted. The safe rule: if a label contains anything other than letters, numbers, spaces, and `<br/>`, wrap it in double quotes.
+- **Edge labels with special chars need quotes too** — use `-->|"label with : or /"|` not `-->|label with : or /|`
+- **Built a scanner to catch these** — the Python scanner in the eval cell checks all `.md` files for unquoted problematic patterns. Run it after adding any new mermaid diagram.
 
 ---
 

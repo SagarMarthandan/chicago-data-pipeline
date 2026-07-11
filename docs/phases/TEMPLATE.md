@@ -27,7 +27,7 @@ graph TB
 
 <1-2 sentences explaining what the diagram shows.>
 
-**For detailed architecture diagrams** (how files connect to containers, how images are built, how services depend on each other), see the **"How Everything Connects"** section in `docs/knowledge.md`. That section is the permanent reference; this doc is the phase snapshot. Don't duplicate those diagrams here.
+**For detailed architecture diagrams** (how files connect to containers, how images are built, how services depend on each other), see `docs/knowledge/architecture.md`. That file is the permanent reference; this doc is the phase snapshot. Don't duplicate those diagrams here.
 
 ## Errors Hit
 

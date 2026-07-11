@@ -36,7 +36,7 @@ graph TB
     SPARK -.->|Phase 1.3<br/>Spark batch job| PG
 ```
 
-**For detailed architecture diagrams** (how files connect to containers, how the ingestion script fits into the pipeline), see the **"How Everything Connects"** section in `docs/knowledge.md`.
+**For detailed architecture diagrams** (how files connect to containers, how the ingestion script fits into the pipeline), see `docs/knowledge/architecture.md`.
 
 ## Errors Hit
 

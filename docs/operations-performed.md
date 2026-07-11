@@ -1,8 +1,19 @@
 # Operations Performed
 
-A chronological log of operations, files created, and structural changes made to this repo. Explains *what* exists and *why* — not errors (those go in `changelog.md`) or reference material (that goes in `knowledge.md`).
+A chronological log of operations, files created, and structural changes made to this repo. Explains *what* exists and *why* — not errors (those go in `changelog.md`) or reference material (that goes in `docs/knowledge/`).
 
 > **Format:** `YYYY-MM-DD` — what was done, what was created, and the reasoning.
+
+## Table of Contents
+
+- [2026-07-08 — Project Setup & Migration](#2026-07-08--project-setup--migration)
+- [2026-07-09 — Phase 1.1 Docker Setup](#2026-07-09--phase-11-docker-setup-started)
+- [2026-07-09 — Airflow 2.8.4 → 3.0.0 Upgrade](#2026-07-09--airflow-284--300-upgrade)
+- [2026-07-09 — Chat History System Created](#2026-07-09--chat-history-system-created)
+- [2026-07-09 — Bitnami Spark → apache/spark Migration](#2026-07-09--bitnami-spark--apachespark-migration)
+- [2026-07-09 — Airflow 3.0 Runtime Fixes + Phase Documentation System](#2026-07-09--airflow-30-runtime-fixes--phase-documentation-system)
+- [2026-07-11 — Phase 1.2: Ingestion Script](#2026-07-11--phase-12-ingestion-script)
+- [2026-07-11 — Mermaid Diagram Rendering Fixes](#2026-07-11--mermaid-diagram-rendering-fixes)
 
 ---
 
@@ -317,3 +328,51 @@ chat-history/
 - Parquet file: 21 columns, 11.5 MB
 - Data quality: 0.8% null lat/long, 0.6% null location_description, 31 unique primary_type values
 - Spark successfully read the Parquet with correct schema and sample rows verified
+
+---
+
+## 2026-07-11 — Mermaid Diagram Rendering Fixes
+
+### Files Modified
+- `docs/knowledge.md` — quoted 10 unquoted colon labels across 4 diagrams (Spark, Airflow, startup order, docker.sock); added "Mermaid Diagram Syntax Rules" section with quoting rules and scanner script
+- `docs/phases/phase-1.1-docker.md` — quoted 5 unquoted colon labels in service overview diagram
+- `changelog.md` — added mermaid rendering errors entry (5 error types, 3 files affected)
+
+### What was fixed
+15 mermaid node labels had unquoted special characters (`:`, `/`, `$`, `{`, `}`) that break rendering. All labels containing these characters are now wrapped in double quotes. A Python scanner was added to `docs/knowledge.md` to catch future issues.
+
+---
+
+## 2026-07-11 — Knowledge Base Split into Sectioned Files
+
+### Why
+`docs/knowledge.md` grew to 43KB / 1003 lines — too large for quick lookup. Split into `docs/knowledge/` folder with one file per topic + an `index.md` with navigation links.
+
+### Files Created
+- `docs/knowledge/index.md` — section directory with navigation table and relationship to other docs
+- `docs/knowledge/wsl.md` — WSL commands and tips
+- `docs/knowledge/uv.md` — uv package manager reference
+- `docs/knowledge/docker-compose.md` — Docker Compose patterns
+- `docs/knowledge/architecture.md` — How Everything Connects (9 mermaid diagrams)
+- `docs/knowledge/postgres.md` — Postgres commands and schema reference
+- `docs/knowledge/dbt.md` — DBT reference
+- `docs/knowledge/spark.md` — Spark reference
+- `docs/knowledge/kafka.md` — Kafka reference (Phase 2)
+- `docs/knowledge/airflow.md` — Airflow 2.x vs 3.x comparison (9 subsections)
+- `docs/knowledge/git.md` — Git commands
+- `docs/knowledge/data-sources.md` — Socrata + Divvy API reference
+- `docs/knowledge/mermaid-syntax.md` — Mermaid quoting rules + scanner
+
+### Files Deleted
+- `docs/knowledge.md` — replaced by `docs/knowledge/` folder
+
+### Files Modified (references updated)
+- `AGENTS.md` — line 4, rule 10, repo structure block
+- `README.md` — project structure, documentation table
+- `chat-history/current-state.md` — file tree, three-doc constraint
+- `docs/operations-performed.md` — header reference, TOC added
+- `docs/phases/README.md` — architecture and relationship references
+- `docs/phases/TEMPLATE.md` — architecture reference
+- `docs/phases/phase-1.1-docker.md` — architecture reference
+- `docs/phases/phase-1.2-ingestion.md` — architecture reference
+- `changelog.md` — TOC added
