@@ -45,6 +45,6 @@ chat-history/current-state.md       ← handoff for the NEXT session
 ## Phase Doc Index
 
 | File | Sub-Phase | Status |
-|---|---|---|
 | `phase-1.1-docker.md` | Docker Compose services | Complete |
-| _next: `phase-1.2-ingestion.md`_ | Data source + ingestion script | Not started |
+| `phase-1.2-ingestion.md` | Socrata API ingestion script | Complete |
+| _next: `phase-1.3-spark-batch.md`_ | Spark batch job (Parquet → Postgres) | Not started |

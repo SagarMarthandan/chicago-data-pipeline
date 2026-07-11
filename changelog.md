@@ -304,4 +304,21 @@ Four issues discovered during `docker compose up`:
 
 ---
 
+## 2026-07-11 — Phase 1.2: Ingestion script errors
+
+### Errors
+
+| # | Error | Root Cause | Fix |
+|---|---|---|---|
+| 1 | Socrata API 404: `dataset.missing` for resource `ijzp-q4t2` | The plan had a typo — the correct resource ID is `ijzp-q8t2` (with an 8, not a 4). The dataset was migrated to a new ID on the Chicago Data Portal. | Queried Socrata catalog API, found correct ID `ijzp-q8t2`, updated `SOCRATA_URL` in `download_crime.py` |
+| 2 | `NameError: name 'time' is not defined` | `import time` was accidentally consumed during an edit that replaced it with a misplaced `SOCRATA_URL` line | Re-added `import time` to the imports block |
+| 3 | Spark can't read Parquet — `data/` not mounted | `docker-compose.yml` only mounted `./spark/jobs` into Spark containers, not `./data` | Added `./data:/opt/spark/data` to spark-master, spark-worker, and airflow-common volumes |
+
+### Lessons
+- **Always verify API endpoints before writing code** — the plan's resource ID (`ijzp-q4t2`) was a typo. The Socrata catalog API (`api.us.socrata.com/api/catalog/v1?q=...`) can confirm the correct ID.
+- **Socrata API returns nested `location` dict and `:@computed_region_*` columns** — the `location` column duplicates `latitude`/`longitude`, and computed region columns are internal geocoding metadata. Both should be dropped during cleaning.
+- **Data directory must be mounted into Spark containers** — Parquet files written by the host ingestion script need to be accessible inside Spark containers via a bind mount.
+
+---
+
 <!-- Append new entries below. Keep the format consistent. -->

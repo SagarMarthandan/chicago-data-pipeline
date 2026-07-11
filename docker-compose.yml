@@ -64,6 +64,8 @@ x-airflow-common: &airflow-common
 
     # Spark jobs — mounted so DockerOperator can reference them
     - ./spark/jobs:/opt/spark/jobs
+    # Data directory — Parquet files from ingestion, accessible to Airflow tasks
+    - ./data:/opt/airflow/data
 
     # Docker socket — lets DockerOperator spawn containers from inside Airflow
     # Without this, DockerOperator can't talk to the Docker daemon
@@ -137,6 +139,8 @@ services:
     volumes:
       # Spark jobs — mounted for direct testing (spark-submit from master)
       - ./spark/jobs:/opt/spark/jobs
+      # Data directory — Parquet files from ingestion are read by Spark
+      - ./data:/opt/spark/data
     healthcheck:
       # Check if Spark master Web UI is responding on port 8080.
       # We check the Web UI (not the RPC port 7077) because Spark master
@@ -167,6 +171,8 @@ services:
       - "8081:8081"
     volumes:
       - ./spark/jobs:/opt/spark/jobs
+      # Data directory — Parquet files from ingestion are read by Spark
+      - ./data:/opt/spark/data
 
   # ============ Airflow 3.0 ============
   # Three services from one image (airflow/Dockerfile):

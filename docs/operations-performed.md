@@ -290,3 +290,30 @@ chat-history/
 - `docs/phases/phase-1.1-docker.md` — Phase 1.1 completion document with 7 section-by-section mermaid diagrams, all 8 errors, 10 decisions, verification output
 - `AGENTS.md` — added rule 13: create phase-completion doc after each sub-phase
 - `docs/knowledge.md` — added "How Everything Connects" section (8 subsections, 9 mermaid diagrams) explaining how uv, Spark, Airflow, init.sql, .env, docker.sock, and docker-compose.yml all link together
+
+---
+
+## 2026-07-11 — Phase 1.2: Ingestion Script
+
+### Files Created
+- `ingestion/download_crime.py` — Socrata API ingestion script: paginates Chicago crime data, cleans API quirks, writes to Parquet
+- `ingestion/.gitkeep` — ensures ingestion/ directory exists in git
+- `data/raw/crime/` — output directory for Parquet files (gitignored)
+- `data/raw/crime/crime_2023.parquet` — 263,393 rows of 2023 crime data (11.5 MB, gitignored)
+
+### Files Modified
+- `docker-compose.yml` — added `./data:/opt/spark/data` mount to spark-master, spark-worker, and `./data:/opt/airflow/data` to airflow-common volumes
+- `docs/knowledge.md` — expanded Data Sources Reference with correct resource ID (`ijzp-q8t2`), SoQL parameter table, API response quirks, column reference table
+- `changelog.md` — added Phase 1.2 errors (wrong resource ID, missing import, missing data mount)
+
+### Packages Installed (host .venv)
+- `pyarrow==25.0.0` — Parquet read/write
+- `pandas==3.0.3` — DataFrame operations
+- `python-dotenv` — .env loading
+- `numpy==2.5.1` — pandas dependency
+
+### Verification Results
+- Script downloaded 263,393 rows in 6 pages (50K + 50K + 50K + 50K + 50K + 13,393)
+- Parquet file: 21 columns, 11.5 MB
+- Data quality: 0.8% null lat/long, 0.6% null location_description, 31 unique primary_type values
+- Spark successfully read the Parquet with correct schema and sample rows verified

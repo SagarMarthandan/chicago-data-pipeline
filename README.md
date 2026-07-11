@@ -104,14 +104,14 @@ graph LR
 | Sub-Phase | Status | What was built |
 |---|---|---|
 | **1.1 Docker Compose** | **Complete** | 6 services: Postgres, Spark (master+worker), Airflow 3.0 (init+webserver+scheduler). All running and verified healthy. |
-| 1.2 Ingestion | Not started | Socrata API script to download Chicago crime data into Postgres `raw` schema |
-| 1.3 Spark batch | Not started | Transform raw crime data, write to Postgres |
+| **1.2 Ingestion** | **Complete** | Socrata API script downloads 2023 crime data (263K rows) to Parquet. Spark can read it. |
+| 1.3 Spark batch | Not started | Transform raw crime data, write to Postgres `raw` schema via JDBC |
 | 1.4 DBT models | Not started | Staging + mart transformations |
 | 1.5 Airflow DAG | Not started | Orchestrate the full pipeline end-to-end |
 
 **Phase 1 is done when:** `docker compose up` → DAG runs → DBT marts queryable.
 
-See `docs/phases/phase-1.1-docker.md` for the Phase 1.1 completion document with architecture diagrams, errors hit, and verification.
+See `docs/phases/` for phase-completion documents with architecture diagrams, errors hit, and verification.
 
 ## Phased Build
 

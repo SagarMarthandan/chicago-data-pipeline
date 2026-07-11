@@ -1,6 +1,6 @@
 # Current State — Handoff Document
 
-> **Read this first in a new session.** This file is the handoff: current state, active decisions, and next steps. Last updated: 2026-07-09 (end of session).
+> **Read this first in a new session.** This file is the handoff: current state, active decisions, and next steps. Last updated: 2026-07-11 (end of session).
 
 ---
 
@@ -10,7 +10,7 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 
 - **Repo:** `~/chicago-data-pipeline/` (WSL, Ubuntu on Windows 10)
 - **Git:** initialized on `main`, no commits yet (user commits manually)
-- **Phase:** 1 (Batch Foundation) — **infrastructure COMPLETE and verified**, ready for pipeline code
+- **Phase:** 1 (Batch Foundation) — Phase 1.1 (Docker) + Phase 1.2 (Ingestion) COMPLETE. Next: Phase 1.3 (Spark batch job)
 - **AI mode:** AI-writes-code (user said "you write it" — explicit mode switch from Socratic)
 
 ## Tech Stack
@@ -87,15 +87,20 @@ These were discovered during `docker compose up` and are now resolved:
 ├── spark/
 │   ├── Dockerfile            ← apache/spark:3.5.1 + PostgreSQL JDBC
 │   └── jobs/.gitkeep
+├── ingestion/
+│   └── download_crime.py     ← Socrata API → Parquet (Phase 1.2)
+├── data/                     ← Parquet output (gitignored)
+│   └── raw/crime/crime_2023.parquet ← 263K rows, 11.5 MB
 ├── chat-history/             ← THIS FOLDER — conversation reference
 └── docs/
-    ├── knowledge.md          ← reference commands, syntax, concepts
+    ├── knowledge.md          ← reference commands, syntax, concepts, architecture
     ├── learning-protocol.md  ← Socratic mode rules
     ├── operations-performed.md ← audit trail of what was built
     ├── phases/               ← phase-completion docs (one per sub-phase)
     │   ├── README.md         ← explains the system
     │   ├── TEMPLATE.md       ← copy to start a new phase doc
-    │   └── phase-1.1-docker.md ← Phase 1.1 snapshot (complete)
+    │   ├── phase-1.1-docker.md ← Phase 1.1 snapshot (complete)
+    │   └── phase-1.2-ingestion.md ← Phase 1.2 snapshot (complete)
     └── conventions/
         ├── airflow.md
         ├── dbt.md
@@ -105,15 +110,15 @@ These were discovered during `docker compose up` and are now resolved:
 
 ## Next Steps
 
-Phase 1.1 Docker setup is **complete and verified**. Next:
+Phase 1.1 (Docker) and Phase 1.2 (Ingestion) are **complete and verified**. Next:
 
-1. **Phase 1.2: Ingestion script** (`download_crime.py` using Socrata API)
-   - Write Python script to download Chicago crime data from Socrata API
-   - Save as CSV/Parquet in `data/` directory or load directly into Postgres `raw` schema
-   - Needs `SOCRATA_APP_TOKEN` in `.env` (currently empty)
-2. **Phase 1.3: Spark batch job** — transform raw crime data and write to Postgres
-3. **Phase 1.4: DBT models** — staging + mart transformations
-4. **Phase 1.5: Airflow DAG** — orchestrate the full pipeline
+1. **Phase 1.3: Spark batch job** (`spark/jobs/crime_batch.py`)
+   - Read Parquet from `data/raw/crime/crime_2023.parquet`
+   - Clean: parse dates, normalize `primary_type` casing, handle null lat/long, cast `community_area` to int
+   - Write to Postgres `raw.crime_events` via JDBC
+   - Requires: Parquet file (done), Postgres `raw` schema (done), JDBC driver in Spark image (done)
+2. **Phase 1.4: DBT models** — staging + mart transformations
+3. **Phase 1.5: Airflow DAG** — orchestrate the full pipeline
 
 ## Active Constraints
 
