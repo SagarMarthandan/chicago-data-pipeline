@@ -128,6 +128,13 @@ services:
       # workers can't resolve. Setting it to the Docker service name ensures
       # workers can connect back via spark://spark-master:7077.
       SPARK_MASTER_HOST: spark-master
+      # Postgres credentials — needed by spark-submit jobs that write via JDBC.
+      # Passed through from .env so they're never hardcoded in the job script.
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
     # Official apache/spark uses spark-class to start master/worker directly.
     # Bitnami's SPARK_MODE=master env var doesn't exist in the official image.
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
@@ -161,6 +168,13 @@ services:
       # Worker resource limits — read by spark-class startup scripts
       SPARK_WORKER_CORES: 2
       SPARK_WORKER_MEMORY: 2G
+      # Postgres credentials — needed when executors write via JDBC in
+      # cluster mode. Passed through from .env, same as spark-master.
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
     # Worker connects to master via spark://spark-master:7077
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     depends_on:

@@ -161,7 +161,7 @@ CREATE SCHEMA IF NOT EXISTS raw;
 CREATE SCHEMA IF NOT EXISTS mart;
 ```
 
-### 1.2 Data source — Chicago Crime
+### 1.2 Ingestion script (`ingestion/download_crime.py`)
 
 - **Dataset:** "Crimes - 2001 to Present" on Chicago Data Portal
 - **API:** Socrata API — `https://data.cityofchicago.org/resource/ijzp-q4t2.json`
@@ -187,14 +187,14 @@ CREATE SCHEMA IF NOT EXISTS mart;
 | `latitude` / `longitude` | float | can be null |
 | `year` | int | partition column |
 
-### 1.3 Ingestion script (`ingestion/download_crime.py`)
+**Ingestion approach:**
 
 - Uses `requests` + Socrata API with app token
 - Paginates with `$limit=50000&$offset=...`
 - Writes to local Parquet (not CSV — Parquet preserves types, is columnar, Spark-friendly)
 - **First mistake to make and learn from:** try loading the full 8M rows immediately. Watch it be slow. Then learn about partitioning, predicate pushdown, and incremental loads. This is the lesson.
 
-### 1.4 Spark batch job (`spark/jobs/crime_batch.py`)
+### 1.3 Spark batch job (`spark/jobs/crime_batch.py`)
 
 ```
 Read Parquet → clean → write to Postgres raw.crime_events
@@ -210,7 +210,7 @@ Read Parquet → clean → write to Postgres raw.crime_events
 
 **Spark-Postgres connection:** Use the `postgresql` JDBC driver. Mount the JAR into the Spark container. This will be your first Docker volume mount headache — embrace it.
 
-### 1.5 DBT models
+### 1.4 DBT models
 
 **Staging (`stg_crime_events.sql`):** Light cleaning on top of raw. Rename columns to snake_case, cast types, deduplicate on `id`.
 
@@ -290,7 +290,7 @@ models:
               # note: 0 is a valid "unassigned" value — handle in model
 ```
 
-### 1.6 Airflow DAG (`crime_batch_dag.py`)
+### 1.5 Airflow DAG (`crime_batch_dag.py`)
 
 ```
 download_crime (BashOperator/PythonOperator)
@@ -302,7 +302,7 @@ download_crime (BashOperator/PythonOperator)
 - Schedule: `@daily` (but start with `@manual` while debugging)
 - Use Airflow's `DockerOperator` to run the Spark job in the spark container, OR `SparkSubmitOperator` pointing at spark-master. Pick one — learn the tradeoff.
 
-### 1.7 Phase 1 deliverable & verification
+### 1.6 Phase 1 deliverable & verification
 
 **Done when:**
 - `docker compose up` starts Postgres + Airflow + Spark

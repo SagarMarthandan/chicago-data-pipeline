@@ -14,6 +14,7 @@ A chronological log of operations, files created, and structural changes made to
 - [2026-07-09 — Airflow 3.0 Runtime Fixes + Phase Documentation System](#2026-07-09--airflow-30-runtime-fixes--phase-documentation-system)
 - [2026-07-11 — Phase 1.2: Ingestion Script](#2026-07-11--phase-12-ingestion-script)
 - [2026-07-11 — Mermaid Diagram Rendering Fixes](#2026-07-11--mermaid-diagram-rendering-fixes)
+- [2026-07-13 — Phase 1.3: Spark Batch Job](#2026-07-13--phase-13-spark-batch-job)
 
 ---
 
@@ -375,4 +376,22 @@ chat-history/
 - `docs/phases/TEMPLATE.md` — architecture reference
 - `docs/phases/phase-1.1-docker.md` — architecture reference
 - `docs/phases/phase-1.2-ingestion.md` — architecture reference
+
+## 2026-07-13 — Phase 1.3: Spark Batch Job
+
+### Files Created
+- `spark/jobs/crime_batch.py` — Spark batch ETL job. Reads `data/raw/crime/crime_2023.parquet` (263,393 rows), cleans (cast id to long, parse dates to timestamp, uppercase primary_type, cast community_area to int, dedup on id, drop null ids), writes to Postgres `raw.crime_events` via JDBC with `overwrite` mode. Includes built-in verification step (reads back from Postgres and compares row counts).
+
+### Files Modified
+- `docker-compose.yml` — Added Postgres env vars to `spark-master` and `spark-worker` services: `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_HOST=postgres`, `POSTGRES_PORT=5432`. These are read by `crime_batch.py` via `os.environ` for JDBC credentials. Passed through from `.env` via `${...}` interpolation.
+
+### Infrastructure Changes
+- Spark services now have Postgres credentials in their environment, enabling JDBC writes without hardcoding passwords in job scripts
+- `raw.crime_events` table created in Postgres: 263,393 rows, 21 columns
+  - Schema: `id` (bigint), `case_number` (text), `date` (timestamp), `block` (text), `iucr` (text), `primary_type` (text), `description` (text), `location_description` (text), `arrest` (boolean), `domestic` (boolean), `beat` (text), `district` (bigint), `ward` (double), `community_area` (integer), `fbi_code` (text), `x_coordinate` (text), `y_coordinate` (text), `year` (bigint), `updated_on` (timestamp), `latitude` (double), `longitude` (double)
+
+### Verification
+- Spark job ran successfully: 263,393 rows read from Parquet, 0 dropped, 263,393 written to Postgres
+- Postgres row count verified: `SELECT count(*) FROM raw.crime_events` → 263,393
+- Column types verified via `information_schema.columns` — all casts correct
 - `changelog.md` — TOC added

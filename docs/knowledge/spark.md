@@ -27,15 +27,22 @@ healthcheck:
 ```
 
 ### Useful Commands
-```bash
-# Submit a batch job
-spark-submit --master local[*] jobs/crime_batch.py
 
-# Submit with JDBC dependency
+> **IMPORTANT:** In the `apache/spark` container, `spark-submit` is NOT on `$PATH`.
+> Always use the full path: `/opt/spark/bin/spark-submit`
+
+```bash
+# Submit a batch job (inside spark-master container)
+/opt/spark/bin/spark-submit --master local[*] /opt/spark/jobs/crime_batch.py
+
+# From the host via docker compose exec
+docker compose exec spark-master /opt/spark/bin/spark-submit --master local[*] /opt/spark/jobs/crime_batch.py
+
+# Submit with JDBC dependency (not needed — driver is baked into our image)
 spark-submit --packages org.postgresql:postgresql:42.7.3 jobs/crime_batch.py
 
 # Spark shell (PySpark)
-pyspark --master local[*]
+/opt/spark/bin/pyspark --master local[*]
 ```
 
 ### JDBC Connection to Postgres

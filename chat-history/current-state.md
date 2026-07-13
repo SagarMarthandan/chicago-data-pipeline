@@ -1,6 +1,6 @@
 # Current State — Handoff Document
 
-> **Read this first in a new session.** This file is the handoff: current state, active decisions, and next steps. Last updated: 2026-07-11 (end of session).
+> **Read this first in a new session.** This file is the handoff: current state, active decisions, and next steps. Last updated: 2026-07-13 (end of session).
 
 ---
 
@@ -10,7 +10,7 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 
 - **Repo:** `~/chicago-data-pipeline/` (WSL, Ubuntu on Windows 10)
 - **Git:** initialized on `main`, no commits yet (user commits manually)
-- **Phase:** 1 (Batch Foundation) — Phase 1.1 (Docker) + Phase 1.2 (Ingestion) COMPLETE. Next: Phase 1.3 (Spark batch job)
+- **Phase:** 1 (Batch Foundation) — Phase 1.1 (Docker) + Phase 1.2 (Ingestion) + Phase 1.3 (Spark batch) COMPLETE. Next: Phase 1.4 (DBT models)
 - **AI mode:** AI-writes-code (user said "you write it" — explicit mode switch from Socratic)
 
 ## Tech Stack
@@ -53,29 +53,33 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 - **Spark UI on port 8180** (8080 conflicts with Airflow)
 - **uv init (project mode)** for host Python — `pyproject.toml` + `uv.lock`
 - **`uv pip install --system`** in Docker containers (not `uv sync`)
+- **Socrata resource ID is `ijzp-q8t2`** (NOT `ijzp-q4t2` — the plan had a typo)
 
-### Airflow 3.0 Runtime Breaking Changes (ALL FIXED)
-These were discovered during `docker compose up` and are now resolved:
+### Phase 1.2 — Ingestion (COMPLETE)
+- `ingestion/download_crime.py` — downloads Chicago crime data from Socrata API, paginates, cleans API quirks, writes Parquet
+- `data/raw/crime/crime_2023.parquet` — 263,393 rows, 21 columns, 11.5 MB
+- Spark can read the Parquet from inside containers (`./data:/opt/spark/data` mount added)
+- Socrata app token is OPTIONAL — script works without it (1K req/hr anonymous, 10K with token)
 
-| Issue | Fix Applied |
-|---|---|
-| `airflow webserver` command removed | `command: api-server` in docker-compose.yml |
-| Scheduler has no default CMD | `command: scheduler` added explicitly |
-| Health endpoint moved | `/api/v2/monitor/health` (not `/health`) |
-| Port config section moved | `AIRFLOW__API__PORT` (not `AIRFLOW__WEBSERVER__WEB_SERVER_PORT`) |
-| passwords.json PermissionError | `chmod 666 airflow/passwords.json` on host |
-| Spark master healthcheck on wrong port | Check Web UI port 8080 (not RPC port 7077) |
+### Phase 1.3 — Spark Batch Job (COMPLETE)
+- `spark/jobs/crime_batch.py` — reads Parquet → cleans → writes to Postgres `raw.crime_events` via JDBC
+- Cleaning: cast `id` to long, parse `date`/`updated_on` to timestamp, uppercase `primary_type`, cast `community_area` to int, dedup on `id`, drop null ids
+- `raw.crime_events` table: 263,393 rows, 21 columns — verified in Postgres
+- Idempotent: `mode("overwrite")` — safe to re-run, replaces whole table
+- `docker-compose.yml` updated: Postgres env vars added to both `spark-master` and `spark-worker`
+- Run command: `docker compose exec spark-master /opt/spark/bin/spark-submit --master local[*] /opt/spark/jobs/crime_batch.py`
+- **Note:** `spark-submit` is NOT on PATH in apache/spark image — use full path `/opt/spark/bin/spark-submit`
 
 ### Files Created
 ```
 ~/chicago-data-pipeline/
 ├── .env.example              ← env var template (Airflow 3.0 SimpleAuthManager config)
 ├── .gitignore
-├── AGENTS.md                 ← AI assistant rules (read changelog, knowledge, operations-performed)
-├── README.md                 ← 3 Mermaid diagrams
-├── changelog.md              ← errors/fixes/lessons log
+├── AGENTS.md                 ← AI assistant rules (14 rules, read first)
+├── README.md                 ← 3 Mermaid diagrams + progress table
+├── changelog.md              ← errors/fixes/lessons log (with TOC)
 ├── chicago-pipeline-plan.md  ← full phased plan
-├── docker-compose.yml        ← 6 services, YAML anchors, Airflow 3.0
+├── docker-compose.yml        ← 6 services, YAML anchors, Airflow 3.0, data mount, Spark env vars
 ├── init.sql                  ← 3 schemas + airflow user + airflow_metadata DB
 ├── pyproject.toml            ← uv project mode
 ├── uv.lock                   ← reproducible installs
@@ -86,21 +90,35 @@ These were discovered during `docker compose up` and are now resolved:
 │   └── dags/.gitkeep
 ├── spark/
 │   ├── Dockerfile            ← apache/spark:3.5.1 + PostgreSQL JDBC
-│   └── jobs/.gitkeep
+│   └── jobs/
+│       └── crime_batch.py    ← Spark batch ETL: Parquet → clean → Postgres (Phase 1.3)
 ├── ingestion/
 │   └── download_crime.py     ← Socrata API → Parquet (Phase 1.2)
 ├── data/                     ← Parquet output (gitignored)
 │   └── raw/crime/crime_2023.parquet ← 263K rows, 11.5 MB
-├── chat-history/             ← THIS FOLDER — conversation reference
+├── chat-history/             ← conversation reference (read current-state.md first)
 └── docs/
     ├── knowledge/            ← reference (one file per topic, see index.md)
+    │   ├── index.md          ← navigation table + relationship to other docs
+    │   ├── wsl.md
+    │   ├── uv.md
+    │   ├── docker-compose.md
+    │   ├── architecture.md   ← How Everything Connects (9 mermaid diagrams)
+    │   ├── postgres.md
+    │   ├── dbt.md
+    │   ├── spark.md
+    │   ├── kafka.md
+    │   ├── airflow.md        ← Airflow 2.x vs 3.x comparison (9 subsections)
+    │   ├── git.md
+    │   ├── data-sources.md   ← Socrata + Divvy API reference
+    │   └── mermaid-syntax.md ← quoting rules + scanner script
     ├── learning-protocol.md  ← Socratic mode rules
-    ├── operations-performed.md ← audit trail of what was built
+    ├── operations-performed.md ← audit trail (with TOC)
     ├── phases/               ← phase-completion docs (one per sub-phase)
     │   ├── README.md         ← explains the system
-    │   ├── TEMPLATE.md       ← copy to start a new phase doc
     │   ├── phase-1.1-docker.md ← Phase 1.1 snapshot (complete)
-    │   └── phase-1.2-ingestion.md ← Phase 1.2 snapshot (complete)
+    │   ├── phase-1.2-ingestion.md ← Phase 1.2 snapshot (complete)
+    │   └── phase-1.3-spark-batch.md ← Phase 1.3 snapshot (complete)
     └── conventions/
         ├── airflow.md
         ├── dbt.md
@@ -110,23 +128,27 @@ These were discovered during `docker compose up` and are now resolved:
 
 ## Next Steps
 
-Phase 1.1 (Docker) and Phase 1.2 (Ingestion) are **complete and verified**. Next:
+Phase 1.1 (Docker), Phase 1.2 (Ingestion), and Phase 1.3 (Spark batch) are **complete and verified**. Next:
 
-1. **Phase 1.3: Spark batch job** (`spark/jobs/crime_batch.py`)
-   - Read Parquet from `data/raw/crime/crime_2023.parquet`
-   - Clean: parse dates, normalize `primary_type` casing, handle null lat/long, cast `community_area` to int
-   - Write to Postgres `raw.crime_events` via JDBC
-   - Requires: Parquet file (done), Postgres `raw` schema (done), JDBC driver in Spark image (done)
-2. **Phase 1.4: DBT models** — staging + mart transformations
-3. **Phase 1.5: Airflow DAG** — orchestrate the full pipeline
+1. **Phase 1.4: DBT models** (`dbt/` project)
+   - Staging: `stg_crime_events.sql` — light cleaning on top of `raw.crime_events` (rename columns, cast types, dedup on `id`)
+   - `try_cast` macro — dispatches per-warehouse (Postgres `::` cast, BigQuery `SAFE_CAST`)
+   - Marts: `dim_date`, `dim_community_area`, `dim_crime_type`, `fact_crime_events`
+   - Tests: `schema.yml` with unique/not_null on `crime_id`, relationships on `community_area_id`
+   - Requires: `raw.crime_events` table (done — 263,393 rows)
+2. **Phase 1.5: Airflow DAG** (`airflow/dags/crime_batch_dag.py`)
+   - Orchestrate: download_crime → spark_crime_batch → dbt_run → dbt_test
+   - Requires: working Spark job (done) + DBT models (Phase 1.4)
 
 ## Active Constraints
 
 - **Phase gates:** Phase 2 locked until Phase 1 works end-to-end and is verified. Do NOT skip ahead.
 - **Learning protocol:** Socratic by default. User must say "write the code" to get code. Currently in AI-writes-code mode.
 - **Three-doc system:** `changelog.md` (errors), `docs/knowledge/` (reference, one file per topic), `docs/operations-performed.md` (audit trail). Update all three after every change.
-- **Phase-completion docs:** After each sub-phase is verified, create `docs/phases/phase-X.Y-<name>.md` from `TEMPLATE.md`. Include section-by-section mermaid diagrams showing how files connect. See `docs/phases/README.md`.
-- **Chat-history system:** Update `chat-history/` when context approaches 75%. Update `current-state.md` at the end of each session.
+- **Phase-completion docs:** After each sub-phase is verified, create `docs/phases/phase-X.Y-<name>.md` from `TEMPLATE.md`. Include one high-level mermaid diagram + pointer to `docs/knowledge/architecture.md` for details. See `docs/phases/README.md`.
+- **Chat-history system:** Update `chat-history/` when context approaches 75%. Update `current-state.md` at the end of a session.
+- **Doc maintainability (AGENTS.md rule 14):** When a `.md` file exceeds ~500 lines or ~20KB, split into a folder with one file per section + `index.md`. Append-only logs stay single but get a TOC with anchor links.
+- **Mermaid quoting:** All node labels containing `:`, `/`, `$`, `{`, `}` must be wrapped in double quotes. See `docs/knowledge/mermaid-syntax.md` for rules + scanner script.
 - **Stable versions only:** User wants non-experimental, production-hardened versions.
 - **Treat user as entry-level DE engineer** for explanations, despite actual experience.
 
@@ -142,11 +164,14 @@ Phase 1.1 (Docker) and Phase 1.2 (Ingestion) are **complete and verified**. Next
 ## Open Questions / Risks
 
 - **Airflow 3.0 DockerOperator:** The `apache-airflow-providers-docker` package is installed and the image built successfully (133 packages, no conflicts). Will know if it works when first DAG uses DockerOperator.
-- **No pipeline code exists yet** — all files are infrastructure, planning, and documentation. Next step is the ingestion script.
+- **Socrata app token not set:** `SOCRATA_APP_TOKEN` is empty in `.env`. Script works without it (anonymous rate limit 1K req/hr is sufficient for 263K rows = 6 requests). Add token later for larger pulls.
 - **Bitnami images no longer free** — resolved for Spark by switching to `apache/spark:3.5.1`. If other Bitnami images were planned (Kafka, etc.), need alternatives. Kafka isn't needed until Phase 2.
 - **`docker compose down` (without `-v`) preserves data** — named volumes `postgres_data` and `airflow_logs` persist. Use `-v` only to wipe everything.
+- **WSL2 memory limit:** Increased from 4GB to 8GB via `C:\Users\sagar\.wslconfig` (user did manually). 4GB was bottlenecking with 6 Docker services. Apply with `wsl --shutdown` then reopen terminal.
+- **apache/spark PATH:** `spark-submit` is not on PATH in the apache/spark container. Always use `/opt/spark/bin/spark-submit` when exec'ing into spark-master.
+- **Spark-written tables not persisted by init.sql:** `raw.crime_events` is created by the Spark job at runtime, not by `init.sql`. If the Postgres volume is wiped, re-run the batch job (idempotent via `overwrite` mode).
 
-## Chat History Chunks (this session)
+## Chat History Chunks
 
 | File | Topic |
 |---|---|

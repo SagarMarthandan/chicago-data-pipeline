@@ -20,6 +20,7 @@ A running log of changes, errors, and fixes throughout the project. Use this to 
 - [2026-07-09 — Airflow 3.0 runtime breaking changes](#2026-07-09--airflow-30-runtime-breaking-changes-webserver-scheduler-health-permissions)
 - [2026-07-11 — Phase 1.2: Ingestion script errors](#2026-07-11--phase-12-ingestion-script-errors)
 - [2026-07-11 — Mermaid diagram rendering errors](#2026-07-11--mermaid-diagram-rendering-errors-across-md-files)
+- [2026-07-13 — Phase 1.3: Spark batch job](#2026-07-13--phase-13-spark-batch-job)
 
 ---
 
@@ -356,6 +357,29 @@ Four issues discovered during `docker compose up`:
 - **Always quote mermaid node labels containing special characters** — `/`, `:`, `$`, `{`, `}` all break rendering when unquoted. The safe rule: if a label contains anything other than letters, numbers, spaces, and `<br/>`, wrap it in double quotes.
 - **Edge labels with special chars need quotes too** — use `-->|"label with : or /"|` not `-->|label with : or /|`
 - **Built a scanner to catch these** — the Python scanner in the eval cell checks all `.md` files for unquoted problematic patterns. Run it after adding any new mermaid diagram.
+
+---
+
+## 2026-07-13 — Phase 1.3: Spark batch job
+
+### Changes
+- Created `spark/jobs/crime_batch.py` — Spark batch ETL: reads Parquet → cleans → writes to Postgres `raw.crime_events` via JDBC
+- Updated `docker-compose.yml` — added Postgres env vars (`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_HOST`, `POSTGRES_PORT`) to both `spark-master` and `spark-worker` services so JDBC credentials are available inside containers
+
+### Errors & Fixes
+
+| # | Error | Root Cause | Fix | Lesson |
+|---|---|---|---|---|
+| 1 | `spark-submit: executable file not found in $PATH` | apache/spark image doesn't add `/opt/spark/bin` to PATH for `docker compose exec` | Use full path: `/opt/spark/bin/spark-submit` | The apache/spark image (unlike bitnami) doesn't put Spark binaries on PATH. Always use the full path `/opt/spark/bin/spark-submit` when exec'ing into the container. |
+| 2 | Duplicate `environment:` block in docker-compose.yml for spark-worker | Edit tool replaced only part of the old block, leaving a stale duplicate | Deleted the stale lines, merged all env vars under one `environment:` key | When using edit tool on YAML, verify the full service block after editing — partial replacements can leave orphaned keys that silently override each other. |
+| 3 | `spark-worker:` service key dropped during edit | The SWAP operation consumed the service header lines | Re-inserted `spark-worker:`, `build: ./spark`, `restart: unless-stopped` before the `environment:` block | Always verify service keys exist after editing docker-compose.yml — a missing service key silently drops the entire service. |
+| 4 | `raw.crime_events` table missing after WSL restart | WSL `--shutdown` + Docker restart didn't preserve Spark-written tables (the table is created by the job, not by `init.sql`) | Re-ran the batch job (idempotent via `mode("overwrite")`) | Spark-written tables are not part of `init.sql` — they're created at job runtime. If the volume is wiped or container recreated, re-run the job. `overwrite` mode makes this safe. |
+
+### Lessons
+- **apache/spark PATH:** The official `apache/spark` image doesn't add `/opt/spark/bin` to PATH. Use `/opt/spark/bin/spark-submit` explicitly.
+- **Idempotent batch jobs:** `mode("overwrite")` means the job is safe to re-run anytime — it replaces the whole table. This is the Phase 1 pattern; Phase 2+ will use upserts.
+- **Docker Compose env propagation:** Spark executors run on workers, not just the master. Both services need Postgres credentials for JDBC writes in cluster mode.
+- **Data persistence:** Named volumes preserve `init.sql` output (schemas, users) but NOT Spark-written tables. Those are application data, created at runtime.
 
 ---
 
