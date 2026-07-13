@@ -16,6 +16,7 @@ A chronological log of operations, files created, and structural changes made to
 - [2026-07-11 — Mermaid Diagram Rendering Fixes](#2026-07-11--mermaid-diagram-rendering-fixes)
 - [2026-07-13 — Phase 1.3: Spark Batch Job](#2026-07-13--phase-13-spark-batch-job)
 - [2026-07-13 — Phase 1.4: DBT Models](#2026-07-13--phase-14-dbt-models)
+- [2026-07-13 — Phase 1.5: Airflow DAG](#2026-07-13--phase-15-airflow-dag)
 
 ---
 
@@ -428,3 +429,83 @@ chat-history/
 - Analytical query verified: top 10 community areas by crime count (Austin: 12,700, Near North Side: 11,196, ...)
 - Row counts: stg_crime_events=263,393, fact_crime_events=263,393, dim_date=365, dim_community_area=77, dim_crime_type=323
 - `changelog.md` — TOC added
+
+## 2026-07-13 — Phase 1.5: Airflow DAG
+
+### What was built
+- `airflow/dags/crime_batch_dag.py` — Airflow DAG with 3 tasks: download_crime (BashOperator) → spark_crime_batch (BashOperator, docker exec) → dbt_build (BashOperator, docker run). `schedule=None`, `max_active_runs=1`, `retries=1`.
+- `dbt/Dockerfile` — Separate dbt image (python:3.11-slim + dbt-core 1.11.12 + dbt-postgres 1.10.2). Needed because dbt-core 1.11's protobuf >=6.0 conflicts with Airflow 3.0's protobuf 4.x.
+- `airflow/dbt_profiles/profiles.yml` — DBT profiles for Airflow container: `host: postgres` (Docker service name), credentials via `env_var()`.
+- `dbt-build` service in docker-compose.yml — build-only service (never starts), exists so `docker compose build` builds the dbt image.
+
+### Files Created
+- `airflow/dags/crime_batch_dag.py` — DAG file
+- `dbt/Dockerfile` — dbt container image
+- `airflow/dbt_profiles/profiles.yml` — dbt profiles for in-container use
+
+### Files Modified
+- `docker-compose.yml` — added: ingestion/dbt/dbt_profiles mounts, Postgres env vars for Airflow, execution API URL, shared secrets (internal_api, JWT, webserver), dbt-build service
+- `airflow/Dockerfile` — added: docker group (GID 1001) for docker.sock access, ingestion deps via requirements.txt
+- `airflow/requirements.txt` — added: pandas, pyarrow, requests, python-dotenv. Removed: dbt-core, dbt-postgres (moved to separate image)
+- `.env` / `.env.example` — added: `AIRFLOW__CORE__INTERNAL_API_SECRET_KEY`, `AIRFLOW__API_AUTH__JWT_SECRET`, `AIRFLOW__WEBSERVER__SECRET_KEY`
+- `ingestion/download_crime.py` — fixed docstring resource ID typo (ijzp-q4t2 → ijzp-q8t2), increased API timeout 60s → 120s
+
+### Infrastructure Changes
+- Airflow container now has: docker CLI access (docker.sock), ingestion deps, dbt project + profiles mounted
+- Separate dbt image built and available as `chicago-data-pipeline-dbt:latest`
+- Airflow 3.0 execution API configured: `AIRFLOW__CORE__EXECUTION_API_SERVER_URL=http://airflow-webserver:8080/execution/`
+- Shared secrets set for scheduler-webserver mutual auth
+
+### Verification
+- DAG parses: `DagBag` loads `crime_batch` with no import errors
+- DAG run `manual__2026-07-13T12:55:11...tnc7INKH` — all 3 tasks succeeded:
+  - download_crime: success (117s) — Socrata API → Parquet
+  - spark_crime_batch: success (32s) — Parquet → Postgres raw.crime_events
+  - dbt_build: success (11s) — seed + staging + marts + 37 tests
+  - DagRun state: success (137s total)
+- Marts queryable: dim_date=365, dim_community_area=77, dim_crime_type=323, fact_crime_events=263,394
+
+## 2026-07-13 — GID Portability Fix + Socrata Credentials
+
+### What was done
+Made the hardcoded docker GID in `airflow/Dockerfile` configurable via a build arg, and stored all 4 Socrata API credentials in `.env`.
+
+### Files Modified
+- `airflow/Dockerfile` — replaced hardcoded `groupadd -g 1001 docker` with `ARG DOCKER_GID=999` + `groupadd -g ${DOCKER_GID} docker`
+- `docker-compose.yml` — added `build.args.DOCKER_GID: ${DOCKER_GID:-999}` under `x-airflow-common`, added `SOCRATA_APP_TOKEN: ${SOCRATA_APP_TOKEN}` to Airflow env
+- `.env` — added `DOCKER_GID=1001`, `SOCRATA_APP_TOKEN`, `SOCRATA_API_KEY_ID`, `SOCRATA_API_KEY_SECRET`, `SOCRATA_SECRET_TOKEN`
+- `.env.example` — added placeholders for all above with comments
+- `chat-history/current-state.md` — updated GID reference, Socrata token status, DockerOperator risk, files tree, chat history table
+
+### Files Created
+- `chat-history/2026-07-13/04-gid-portability-and-socrata-credentials.md` — session chunk
+
+### Verification
+- Rebuilt Airflow image with `DOCKER_GID=1001` build arg
+- Verified `docker:x:1001:airflow` in container `/etc/group`
+- Verified docker.sock access: `docker ps` returns container IDs from inside Airflow container
+
+## 2026-07-13 — Phase 1.6: Verification (Phase 1 Gate)
+
+### What was done
+Formal end-to-end verification of Phase 1 batch pipeline. Cold-started all services, triggered DAG, verified marts. Two issues discovered and fixed: DBT views blocking Spark overwrite, and missing Airflow 3.0 dag-processor service.
+
+### Files Modified
+- `airflow/dags/crime_batch_dag.py` — added `clear_dbt_schemas` task (4th task: drops staging + mart schemas CASCADE before Spark runs)
+- `docker-compose.yml` — added `airflow-dag-processor` service (Airflow 3.0 separates DAG processing from scheduler)
+
+### Files Created
+- `docs/phases/phase-1.6-verification.md` — phase completion doc
+- `chat-history/2026-07-13/05-phase-1.6-verification.md` — session chunk
+
+### Verification
+- Cold start: `docker compose down` + `up -d` → all 7 services healthy
+- DAG run `manual__2026-07-13T14:11:11...9MkcEDt7` — all 4 tasks succeeded (163s total):
+  - download_crime: success (119s)
+  - clear_dbt_schemas: success (0.3s)
+  - spark_crime_batch: success (34s)
+  - dbt_build: success (9s)
+  - DagRun state: success
+- Marts queryable: dim_date=365, dim_community_area=77, dim_crime_type=323, fact_crime_events=263,394
+- fact_crime_events matches raw.crime_events (263,394) — no data loss
+- **Phase 1 gate: PASSED. Phase 2 unlocked.**

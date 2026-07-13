@@ -87,11 +87,11 @@ graph LR
     P3["Phase 3<br/>Observability<br/>Grafana + DBT Tests + SLAs"]
     P4["Phase 4<br/>Cloud Migration<br/>Terraform + BigQuery + Airbyte"]
 
-    P1 -->|"done when: docker compose up<br/>DAG runs, marts queryable"| P2
+    P1 -->|"✅ DONE: docker compose up<br/>DAG runs, marts queryable"| P2
     P2 -->|"done when: live Divvy data<br/>in Postgres via Kafka"| P3
     P3 -->|"done when: dashboards + tests<br>+ SLAs operational"| P4
 
-    style P1 fill:#fff3cd,stroke:#e8c84c
+    style P1 fill:#d4f4dd,stroke:#4ca85a
     style P2 fill:#f0f0f0,stroke:#999
     style P3 fill:#f0f0f0,stroke:#999
     style P4 fill:#f0f0f0,stroke:#999
@@ -103,14 +103,14 @@ graph LR
 
 | Sub-Phase | Status | What was built |
 |---|---|---|
-| **1.1 Docker Compose** | **Complete** | 6 services: Postgres, Spark (master+worker), Airflow 3.0 (init+webserver+scheduler). All running and verified healthy. |
+| **1.1 Docker Compose** | **Complete** | 7 services: Postgres, Spark (master+worker), Airflow 3.0 (init+webserver+scheduler+dag-processor). All running and verified healthy. |
 | **1.2 Ingestion** | **Complete** | Socrata API script downloads 2023 crime data (263K rows) to Parquet. Spark can read it from containers. |
 | **1.3 Spark batch** | **Complete** | `crime_batch.py` — Parquet → clean → Postgres `raw.crime_events` (263K rows, 21 cols). Idempotent via `mode("overwrite")`. |
 | **1.4 DBT models** | **Complete** | Staging view + 4 marts (dim_date, dim_community_area, dim_crime_type, fact_crime_events). 37/37 tests pass (20 standard + 11 dbt-expectations). |
-| 1.5 Airflow DAG | Not started | Orchestrate: download → spark batch → dbt run → dbt test |
-| 1.6 Phase 1 verification | Not started | End-to-end: `docker compose up` → trigger DAG → marts queryable |
+| **1.5 Airflow DAG** | **Complete** | `crime_batch_dag.py` — download → clear_dbt_schemas → spark → dbt_build. All 4 tasks succeed (163s total). Separate dbt Docker image (protobuf conflict with Airflow). |
+| **1.6 Phase 1 verification** | **Complete** | Cold start → DAG run → 4 tasks succeed → marts queryable (263,394 fact rows). **Phase 1 gate passed.** |
 
-**Phase 1 is done when:** `docker compose up` → DAG runs → DBT marts queryable.
+**Phase 1: DONE.** `docker compose up` → trigger DAG → 4 tasks succeed → DBT marts queryable. Verified 2026-07-13.
 
 See `docs/phases/` for phase-completion documents with architecture diagrams, errors hit, and verification.
 
@@ -135,15 +135,15 @@ chicago-data-pipeline/
 ├── README.md                 # this file
 ├── changelog.md              # errors, fixes, lessons (read before working)
 ├── chicago-pipeline-plan.md  # full phased design
-├── docker-compose.yml        # 6 services: Postgres, Spark, Airflow
+├── docker-compose.yml        # 7 services: Postgres, Spark, Airflow (incl. dag-processor)
 ├── init.sql                  # Postgres init: 3 schemas + airflow DB
 ├── pyproject.toml            # uv project mode (host Python)
 ├── uv.lock                   # reproducible installs
 ├── airflow/
-│   ├── Dockerfile            # Airflow 3.0 + Docker CLI + providers
+│   ├── Dockerfile            # Airflow 3.0 + Docker CLI + DOCKER_GID build arg + ingestion deps
 │   ├── passwords.json        # SimpleAuthManager passwords
-│   ├── requirements.txt      # postgres + docker providers
-│   └── dags/                 # DAG files (empty — Phase 1.5)
+│   ├── requirements.txt      # postgres + docker providers + ingestion deps (pandas, pyarrow, requests)
+│   └── dags/                 # DAG files (crime_batch_dag.py — Phase 1.5+1.6)
 ├── spark/
 │   ├── Dockerfile            # apache/spark:3.5.1 + PostgreSQL JDBC
 │   └── jobs/
@@ -151,6 +151,7 @@ chicago-data-pipeline/
 ├── ingestion/
 │   └── download_crime.py     # Socrata API → Parquet (Phase 1.2)
 ├── dbt/                      # DBT transformation project (Phase 1.4)
+│   ├── Dockerfile             # separate dbt image (protobuf conflict with Airflow 3.0)
 │   ├── dbt_project.yml       # model config, materialization, schema mapping
 │   ├── profiles.yml          # Postgres connection (gitignored — has password)
 │   ├── packages.yml          # dbt-expectations 0.10.10
@@ -185,7 +186,9 @@ chicago-data-pipeline/
     │   ├── phase-1.1-docker.md
     │   ├── phase-1.2-ingestion.md
     │   ├── phase-1.3-spark-batch.md
-    │   └── phase-1.4-dbt-models.md
+    │   ├── phase-1.4-dbt-models.md
+    │   ├── phase-1.5-airflow-dag.md
+    │   └── phase-1.6-verification.md
     └── conventions/
         ├── airflow.md
         ├── dbt.md
@@ -247,12 +250,33 @@ docker compose down                        # stop (preserves data)
 docker compose down -v                     # stop + WIPE all data
 ```
 
-### Running the pipeline (Phases 1.2–1.4)
+### Running the pipeline (Phase 1 — via Airflow)
+
+```bash
+# 1. Start all services
+docker compose up -d
+
+# 2. Wait for services to be healthy (~90s)
+docker compose ps -a
+
+# 3. Trigger the DAG (from Airflow CLI or UI at http://localhost:8080)
+docker exec chicago-data-pipeline-airflow-scheduler-1 airflow dags trigger crime_batch
+
+# 4. Check DAG state
+docker exec chicago-data-pipeline-airflow-scheduler-1 airflow dags state crime_batch "<dag_run_id>"
+
+# 5. Query marts
+docker compose exec postgres psql -U chicago -d chicago_analytics -c "SELECT COUNT(*) FROM mart.fact_crime_events;"
+```
+
+The DAG runs 4 tasks: download_crime → clear_dbt_schemas → spark_crime_batch → dbt_build (~163s total).
+
+### Running pipeline steps manually (for debugging)
 
 ```bash
 # 1. Download crime data from Socrata API → Parquet (host Python)
 source .venv/bin/activate
-python ingestion/download_crime.py
+python ingestion/download_crime.py --year 2023
 
 # 2. Run Spark batch job: Parquet → clean → Postgres raw.crime_events
 docker compose exec spark-master /opt/spark/bin/spark-submit --master local[*] /opt/spark/jobs/crime_batch.py

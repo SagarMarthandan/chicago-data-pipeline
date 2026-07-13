@@ -21,7 +21,9 @@ A running log of changes, errors, and fixes throughout the project. Use this to 
 - [2026-07-11 — Phase 1.2: Ingestion script errors](#2026-07-11--phase-12-ingestion-script-errors)
 - [2026-07-11 — Mermaid diagram rendering errors](#2026-07-11--mermaid-diagram-rendering-errors-across-md-files)
 - [2026-07-13 — Phase 1.3: Spark batch job](#2026-07-13--phase-13-spark-batch-job)
-- [2026-07-13 — Phase 1.4: DBT models](#2026-07-13--phase-14-dbt-models)
+
+- [2026-07-13 — Phase 1.4: DBT Models](#2026-07-13--phase-14-dbt-models)
+- [2026-07-13 — Phase 1.5: Airflow DAG](#2026-07-13--phase-15-airflow-dag)
 
 ---
 
@@ -428,3 +430,66 @@ Four issues discovered during `docker compose up`:
 ---
 
 <!-- Append new entries below. Keep the format consistent. -->
+
+## 2026-07-13 — Phase 1.5: Airflow DAG
+
+### What was built
+- `airflow/dags/crime_batch_dag.py` — Airflow DAG orchestrating: download_crime → spark_crime_batch → dbt_build
+- `dbt/Dockerfile` — Separate dbt image (dbt-core 1.11 + dbt-postgres 1.10) to avoid protobuf conflict with Airflow 3.0
+- `airflow/dbt_profiles/profiles.yml` — DBT profiles for Airflow container (host: postgres, env_var credentials)
+- `docker-compose.yml` updated: added ingestion/dbt/dbt_profiles mounts, Postgres env vars, execution API URL, shared secrets, dbt-build service
+- `airflow/Dockerfile` updated: added docker group (GID 1001) for docker.sock access, ingestion deps (pandas, pyarrow, requests, python-dotenv)
+- `airflow/requirements.txt` updated: ingestion deps added, dbt removed (separate image)
+- `.env` / `.env.example` updated: added `AIRFLOW__CORE__INTERNAL_API_SECRET_KEY`, `AIRFLOW__API_AUTH__JWT_SECRET`, `AIRFLOW__WEBSERVER__SECRET_KEY`
+- `ingestion/download_crime.py` — fixed docstring resource ID typo (ijzp-q4t2 → ijzp-q8t2), increased API timeout 60s → 120s
+
+### Errors and fixes
+
+| # | Error | Root Cause | Fix |
+|---|---|---|---|
+| 1 | `@manual` schedule rejected: "Exactly 5, 6 or 7 columns" | Airflow 3.0 doesn't accept `@manual` as a cron expression | Changed `schedule="@manual"` to `schedule=None` |
+| 2 | `not found in serialized_dag table` + `Connection refused` | Scheduler couldn't reach the API server — `execution_api_server_url` defaulted to `localhost:8080` (wrong inside scheduler container) | Set `AIRFLOW__CORE__EXECUTION_API_SERVER_URL=http://airflow-webserver:8080/execution/` |
+| 3 | `Invalid auth token: Signature verification failed` | Scheduler and webserver generated different `jwt_secret` and `webserver.secret_key` at startup | Set shared `AIRFLOW__API_AUTH__JWT_SECRET` and `AIRFLOW__WEBSERVER__SECRET_KEY` in .env |
+| 4 | `protobuf 4.25.6` vs dbt-core 1.11 requires `>=6.0` | Airflow 3.0 pins protobuf 4.x; dbt-core 1.11 needs protobuf >=6.0 — incompatible in same Python env | Built separate dbt Docker image, run via `docker run --rm` from BashOperator |
+| 5 | `Permission denied: docker.sock` | Airflow container runs as UID 50000 (airflow), not in docker group | `groupdel docker; groupadd -g 1001 docker; usermod -aG docker airflow` in Dockerfile (GID must match host) |
+| 6 | `PermissionError: [Errno 13] Failed to open local file crime_2023.parquet` | Existing Parquet created by host user, Airflow container runs as UID 50000 | `chmod 666` on Parquet file + `chmod 777` on data/raw/crime/ directory |
+| 7 | `Env var required but not provided: 'POSTGRES_USER'` | `docker run` for dbt container doesn't inherit Airflow container's env vars | Added `-e POSTGRES_USER -e POSTGRES_PASSWORD -e POSTGRES_DB` to docker run command |
+| 8 | `ReadTimeoutError` on Socrata API (60s timeout) | Downloading 50K rows per page takes >60s from inside container | Increased `requests.get()` timeout from 60s to 120s |
+| 9 | `./dbt` and `./ingestion` not mounted into Airflow container | docker-compose.yml only mounted dags, spark/jobs, data, docker.sock | Added `./ingestion:/opt/airflow/ingestion`, `./dbt:/opt/airflow/dbt`, `./airflow/dbt_profiles:/opt/airflow/dbt_profiles` to x-airflow-common volumes |
+| 10 | Airflow image missing ingestion deps (pandas, pyarrow, requests, python-dotenv) | `airflow/requirements.txt` only had provider packages | Added ingestion deps to requirements.txt |
+| 11 | DBT profiles `host: localhost` won't work inside Airflow container | dbt/profiles.yml uses localhost (host-side), but container needs Docker service name | Created separate `airflow/dbt_profiles/profiles.yml` with `host: postgres` and `env_var()` credentials |
+| 12 | `groupadd -f -g 1001 docker` silently failed | `-f` flag means "exit success if group exists" — docker group already existed at GID 102, so GID wasn't changed | Changed to `groupdel docker 2>/dev/null; groupadd -g 1001 docker` — delete first, then recreate with correct GID |
+| 13 | Socrata resource ID typo in docstring | `download_crime.py` docstring said `ijzp-q4t2` (line 47 already had correct `ijzp-q8t2`) | Fixed docstring lines 9-10 |
+
+### Lessons
+- **Airflow 3.0 `@manual` is gone:** Use `schedule=None` for manual-trigger DAGs. `@manual` was never a valid cron expression.
+- **Airflow 3.0 execution API:** The scheduler needs `AIRFLOW__CORE__EXECUTION_API_SERVER_URL` pointing to the webserver's execution API. Inside Docker, this must use the service name (`http://airflow-webserver:8080/execution/`), not `localhost`.
+- **Shared secrets are mandatory:** `AIRFLOW__API_AUTH__JWT_SECRET` and `AIRFLOW__WEBSERVER__SECRET_KEY` must be set as env vars in both webserver and scheduler. Without them, each generates its own random secret and JWT signature verification fails.
+- **dbt + Airflow protobuf conflict:** dbt-core 1.11 (protobuf >=6.0) and Airflow 3.0 (protobuf 4.x) cannot coexist in the same Python environment. Run dbt in a separate container via `docker run --rm`.
+- **docker.sock GID must match host:** The `docker.io` package creates a `docker` group at GID 102. On WSL2, docker.sock has GID 1001. Must `groupdel docker` then `groupadd -g 1001 docker` to align.
+- **`--volumes-from` doesn't pass env vars:** When using `docker run --volumes-from`, the new container inherits volumes but NOT environment variables. Pass them explicitly with `-e VAR_NAME`.
+- **`max_active_runs=1`:** Prevents overlapping DAG runs — critical when tasks are resource-heavy (Spark, Socrata downloads).
+- **Missing mounts are silent killers:** BashOperator tasks fail with "file not found" when bind mounts are missing. Always verify mounts with `docker exec ... ls /path` before triggering the DAG.
+- **`groupadd -f` is a silent no-op:** The `-f` flag makes `groupadd` succeed even if the group exists — but it does NOT change the existing group's GID. Must `groupdel` first, then `groupadd -g <correct GID>`.
+- **Separate profiles for container vs host:** dbt/profiles.yml (host: localhost) works on the host but not inside Docker. Create a separate profiles.yml with `host: postgres` (Docker service name) and `env_var()` for credentials.
+
+- **Never hardcode GIDs in Dockerfiles:** Hardcoding `groupadd -g 1001` breaks on any machine with a different docker.sock GID. Use `ARG DOCKER_GID=999` + `groupadd -g ${DOCKER_GID}` and override via `.env` + docker-compose `build.args`. Default 999 covers most native Linux; WSL2 typically uses 1001.
+
+- **DBT views block Spark overwrite:** When Spark uses `mode("overwrite")` on a table that DBT views depend on, Postgres blocks the drop with `cannot drop table because other objects depend on it`. Drop the dependent schemas (staging, mart) with CASCADE before Spark runs — DBT rebuilds them idempotently.
+- **Airflow 3.0 requires separate dag-processor:** Unlike Airflow 2.x where the scheduler parsed DAGs inline, Airflow 3.0 separates DAG processing into its own component. Without `airflow dag-processor` running, DAGs are never serialized and the scheduler can't find them. This is a breaking change from 2.x — docker-compose setups need the new service.
+
+### Operational Mistakes (Phase 1.6)
+
+These are not technical errors — they are process mistakes made by the AI assistant during Phase 1.6 verification. Documented to prevent repeating.
+
+| # | Mistake | What Happened | What I Should Have Done |
+|---|---|---|---|
+| 1 | **Deleted working serialized_dag entry** | The DAG wasn't updating after editing the file. Instead of waiting for the scheduler's parse cycle or adding the dag-processor service, I deleted the serialized_dag row from Airflow's metadata DB. This broke the DAG entirely — the scheduler couldn't find it and logged `DAG 'crime_batch' not found in serialized_dag table` every second. | Diagnose first: check if a dag-processor is running, wait for the parse cycle (`min_file_process_interval=30s`), or restart the scheduler. The entry was working — it just had the old 3-task version. The right fix was adding the dag-processor service, not deleting the entry. |
+| 2 | **4+ unnecessary `docker compose down/up` cycles** | After deleting the entry, I kept restarting all services hoping the scheduler would re-parse. Each cycle took ~60s and accomplished nothing — the dag-processor wasn't running, so no serialization happened regardless of restarts. | After the first restart failed to re-create the entry, stop and investigate WHY. Read the scheduler logs, check what component is responsible for DAG serialization, look for missing services. One restart to test a hypothesis is fine; repeated restarts without new information is thrashing. |
+| 3 | **Manually mutated Airflow's internal metadata tables** | Tried to write a new serialized_dag entry via Python scripts (`SerializedDagModel.write_dag()`). Failed multiple times — wrong API signature, wrong arguments, and the resulting entry had 0 tasks because I didn't understand the serialization format. | Airflow's internal tables (serialized_dag, dag_run, task_instance, etc.) are managed by Airflow internals. Never manually insert/update/delete rows. Use the CLI (`airflow dags ...`) or let the dag-processor do its job. |
+
+**Lessons:**
+- **Diagnose first, touch second.** When something isn't updating, spend time understanding WHY before changing anything. Read logs, check config, identify the responsible component.
+- **Never delete working state to "force" a refresh.** The serialized_dag entry was working — it just had stale content. Deleting it created a bigger problem than the one I was trying to solve.
+- **Never manually mutate managed internal tables.** Airflow (and other systems) have internal metadata tables with specific serialization formats. Manual inserts will be malformed.
+- **Repeated restarts without new information is thrashing.** If a restart didn't fix it, the next one won't either. Stop and gather new information (logs, config, docs) before acting again.

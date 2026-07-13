@@ -1,0 +1,24 @@
+# DBT Profiles for Airflow container
+#
+# This is a SEPARATE profiles.yml from dbt/profiles.yml (which uses
+# host: localhost for host-side dbt commands). Inside the Airflow
+# container, Postgres is reached via the Docker service name "postgres",
+# not localhost.
+#
+# Credentials come from environment variables (POSTGRES_USER, etc.)
+# passed to the Airflow container in docker-compose.yml.
+#
+# Usage in DAG: dbt build --profiles-dir /opt/airflow/dbt_profiles
+
+chicago_crime:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: postgres
+      user: "{{ env_var('POSTGRES_USER') }}"
+      password: "{{ env_var('POSTGRES_PASSWORD') }}"
+      port: 5432
+      dbname: "{{ env_var('POSTGRES_DB') }}"
+      schema: staging
+      threads: 4

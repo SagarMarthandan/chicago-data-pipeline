@@ -6,8 +6,8 @@ Downloads crime data from the Chicago Data Portal (Socrata API)
 and writes it to local Parquet files.
 
 Dataset: "Crimes - 2001 to Present"
-  Resource ID: ijzp-q4t2
-  API endpoint: https://data.cityofchicago.org/resource/ijzp-q4t2.json
+  Resource ID: ijzp-q8t2
+  API endpoint: https://data.cityofchicago.org/resource/ijzp-q8t2.json
 
 Usage:
   python ingestion/download_crime.py                    # downloads 2023 data (default)
@@ -101,7 +101,7 @@ def fetch_page(year: str, offset: int) -> list[dict]:
     headers = build_headers()
     params = build_params(year, offset)
 
-    response = requests.get(SOCRATA_URL, headers=headers, params=params, timeout=60)
+    response = requests.get(SOCRATA_URL, headers=headers, params=params, timeout=120)
     response.raise_for_status()
 
     return response.json()

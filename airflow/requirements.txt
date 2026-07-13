@@ -5,3 +5,19 @@
 # docker   — DockerOperator (run Spark jobs in isolated containers)
 apache-airflow-providers-postgres
 apache-airflow-providers-docker
+
+# ============================================================
+# Ingestion script deps (ingestion/download_crime.py)
+# Installed in the Airflow image so BashOperator can run the
+# download script directly. These don't conflict with Airflow's
+# protobuf 4.x pin.
+#
+# NOTE: dbt is NOT installed here. dbt-core 1.11 requires
+# protobuf >=6.0 which conflicts with Airflow 3.0's protobuf 4.x.
+# dbt runs via `docker run --rm` using a separate dbt image.
+# See dbt/Dockerfile and the DAG for details.
+# ============================================================
+pandas
+pyarrow
+requests>=2.34.2
+python-dotenv>=1.2.2

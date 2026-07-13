@@ -21,7 +21,10 @@
 # The <<: *airflow-common syntax in each service merges this block.
 # This avoids repeating 10+ lines of env vars and volumes 3 times.
 x-airflow-common: &airflow-common
-  build: ./airflow
+  build:
+    context: ./airflow
+    args:
+      DOCKER_GID: ${DOCKER_GID:-999}
   environment:
     # Executor — how Airflow runs tasks:
     #   LocalExecutor = parallel tasks on one machine, no extra services needed
@@ -55,6 +58,35 @@ x-airflow-common: &airflow-common
     # Passwords file — JSON mapping of username → password
     AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: ${AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE}
 
+    # Postgres credentials — needed by dbt tasks (BashOperator) and
+    # the ingestion script. Passed through from .env.
+    POSTGRES_USER: ${POSTGRES_USER}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
+    # Socrata app token — increases API rate limit from 1K to 10K req/hr.
+    # Used by the ingestion script (download_crime.py).
+    SOCRATA_APP_TOKEN: ${SOCRATA_APP_TOKEN}
+    POSTGRES_DB: ${POSTGRES_DB}
+
+    # Execution API server URL — the scheduler needs to reach the API server
+    # to serialize DAGs. Inside the scheduler container, localhost:8080 is NOT
+    # the API server (that's in the webserver container). Must use the Docker
+    # service name. Airflow 3.0 uses this for DAG serialization + task execution.
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-webserver:8080/execution/
+
+    # Internal API secret key — shared between webserver and scheduler for
+    # mutual auth. Without this, the scheduler gets "Invalid auth token:
+    # Signature verification failed" when trying to serialize DAGs.
+    AIRFLOW__CORE__INTERNAL_API_SECRET_KEY: ${AIRFLOW__CORE__INTERNAL_API_SECRET_KEY}
+
+    # JWT secret — shared between webserver and scheduler for execution API auth.
+    # Without this, each container generates its own random secret and JWT
+    # signature verification fails ("Invalid auth token: Signature verification failed").
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET}
+
+    # Webserver secret key — shared for session signing.
+    AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
+
   volumes:
     # DAG files — bind mount so edits on host appear immediately in container
     - ./airflow/dags:/opt/airflow/dags
@@ -74,6 +106,17 @@ x-airflow-common: &airflow-common
     # Airflow 3.0 SimpleAuthManager — passwords file
     # JSON mapping of username → password (e.g., {"admin": "admin"})
     - ./airflow/passwords.json:/opt/airflow/config/passwords.json
+
+    # Ingestion scripts — mounted so BashOperator can run download_crime.py
+    # Path: /opt/airflow/ingestion → __file__ parent.parent = /opt/airflow
+    # → DATA_DIR resolves to /opt/airflow/data/raw/crime (matches data mount)
+    - ./ingestion:/opt/airflow/ingestion
+
+    # DBT project — mounted so BashOperator can run dbt commands
+    - ./dbt:/opt/airflow/dbt
+
+    # DBT profiles for Airflow container (host: postgres, not localhost)
+    - ./airflow/dbt_profiles:/opt/airflow/dbt_profiles
 
 
 services:
@@ -243,6 +286,27 @@ services:
     # Airflow 3.0: explicit command needed (image has no default CMD)
     command: scheduler
 
+  # Airflow 3.0: DAG processing is now a separate component, not embedded
+  # in the scheduler. Without this service, DAGs are never parsed/serialized
+  # and the scheduler can't find them in the serialized_dag table.
+  airflow-dag-processor:
+    <<: *airflow-common
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    command: dag-processor
+
+
+  # ============ DBT (build-only) ============
+  # This service is never started — it exists only so `docker compose build`
+  # builds the dbt image. The DAG runs it on-demand via `docker run --rm`.
+  # Separated from Airflow because dbt-core 1.11 requires protobuf >=6.0
+  # which conflicts with Airflow 3.0's protobuf 4.x pin.
+  dbt-build:
+    build: ./dbt
+    image: chicago-data-pipeline-dbt:latest
+    command: ["echo", "build-only service — not meant to run"]
 
 # ============ Named Volumes ============
 # Named volumes persist data across container rebuilds.
