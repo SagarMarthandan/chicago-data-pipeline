@@ -18,7 +18,7 @@ A data engineering learning project that answers: **Does crime near a Divvy bike
 
 ## Data Sources
 
-- **Chicago Crime** — Socrata API, ~8M rows, daily batch drops ([data portal](https://data.cityofchicago.org/Public-Safety/Crimes-2001-to-Present/ijzp-q4t2))
+- **Chicago Crime** — Socrata API, ~8M rows, daily batch drops ([data portal](https://data.cityofchicago.org/Public-Safety/Crimes-2001-to-Present/ijzp-q8t2))
 - **Divvy Bike Share** — GBFS live API, station status every ~60s ([feed](https://gbfs.divvybikes.com/gbfs.json))
 
 ## Architecture
@@ -104,10 +104,11 @@ graph LR
 | Sub-Phase | Status | What was built |
 |---|---|---|
 | **1.1 Docker Compose** | **Complete** | 6 services: Postgres, Spark (master+worker), Airflow 3.0 (init+webserver+scheduler). All running and verified healthy. |
-| **1.2 Ingestion** | **Complete** | Socrata API script downloads 2023 crime data (263K rows) to Parquet. Spark can read it. |
-| 1.3 Spark batch | Not started | Transform raw crime data, write to Postgres `raw` schema via JDBC |
-| 1.4 DBT models | Not started | Staging + mart transformations |
-| 1.5 Airflow DAG | Not started | Orchestrate the full pipeline end-to-end |
+| **1.2 Ingestion** | **Complete** | Socrata API script downloads 2023 crime data (263K rows) to Parquet. Spark can read it from containers. |
+| **1.3 Spark batch** | **Complete** | `crime_batch.py` — Parquet → clean → Postgres `raw.crime_events` (263K rows, 21 cols). Idempotent via `mode("overwrite")`. |
+| **1.4 DBT models** | **Complete** | Staging view + 4 marts (dim_date, dim_community_area, dim_crime_type, fact_crime_events). 37/37 tests pass (20 standard + 11 dbt-expectations). |
+| 1.5 Airflow DAG | Not started | Orchestrate: download → spark batch → dbt run → dbt test |
+| 1.6 Phase 1 verification | Not started | End-to-end: `docker compose up` → trigger DAG → marts queryable |
 
 **Phase 1 is done when:** `docker compose up` → DAG runs → DBT marts queryable.
 
@@ -128,6 +129,8 @@ Each phase is a working system before the next begins. See `AGENTS.md` for phase
 chicago-data-pipeline/
 ├── .env.example              # env var template (copy to .env)
 ├── .gitignore
+├── .vscode/
+│   └── settings.json         # dbt Power User config (allowListFolders, Python path)
 ├── AGENTS.md                 # AI assistant rules + phase gates
 ├── README.md                 # this file
 ├── changelog.md              # errors, fixes, lessons (read before working)
@@ -143,7 +146,31 @@ chicago-data-pipeline/
 │   └── dags/                 # DAG files (empty — Phase 1.5)
 ├── spark/
 │   ├── Dockerfile            # apache/spark:3.5.1 + PostgreSQL JDBC
-│   └── jobs/                 # PySpark scripts (empty — Phase 1.3)
+│   └── jobs/
+│       └── crime_batch.py    # Spark batch ETL: Parquet → clean → Postgres (Phase 1.3)
+├── ingestion/
+│   └── download_crime.py     # Socrata API → Parquet (Phase 1.2)
+├── dbt/                      # DBT transformation project (Phase 1.4)
+│   ├── dbt_project.yml       # model config, materialization, schema mapping
+│   ├── profiles.yml          # Postgres connection (gitignored — has password)
+│   ├── packages.yml          # dbt-expectations 0.10.10
+│   ├── macros/
+│   │   ├── try_cast.sql      # warehouse-portable cast macro
+│   │   └── generate_schema_name.sql  # override schema concatenation
+│   ├── models/
+│   │   ├── staging/
+│   │   │   ├── stg_crime_events.sql  # view: rename, cast, dedup
+│   │   │   └── schema.yml    # source definition + staging tests
+│   │   └── marts/
+│   │       ├── dim_date.sql
+│   │       ├── dim_community_area.sql
+│   │       ├── dim_crime_type.sql
+│   │       ├── fact_crime_events.sql
+│   │       └── schema.yml    # 31 data tests (20 standard + 11 dbt-expectations)
+│   └── seeds/
+│       └── community_areas.csv  # 77 community areas from Chicago Data Portal
+├── data/                     # Parquet output (gitignored)
+│   └── raw/crime/crime_2023.parquet  # 263K rows, 11.5 MB
 ├── chat-history/             # conversation reference (read current-state.md first)
 │   ├── README.md
 │   ├── current-state.md      # handoff doc for new sessions
@@ -155,13 +182,15 @@ chicago-data-pipeline/
     ├── phases/                    # phase-completion docs (one per sub-phase)
     │   ├── README.md
     │   ├── TEMPLATE.md
-    │   └── phase-1.1-docker.md
+    │   ├── phase-1.1-docker.md
+    │   ├── phase-1.2-ingestion.md
+    │   ├── phase-1.3-spark-batch.md
+    │   └── phase-1.4-dbt-models.md
     └── conventions/
         ├── airflow.md
         ├── dbt.md
         ├── docker.md
         └── spark.md
-```
 
 ## Getting Started
 
@@ -216,6 +245,20 @@ docker compose logs -f airflow-webserver   # tail logs
 docker compose exec postgres psql -U chicago -d chicago_analytics  # psql shell
 docker compose down                        # stop (preserves data)
 docker compose down -v                     # stop + WIPE all data
+```
+
+### Running the pipeline (Phases 1.2–1.4)
+
+```bash
+# 1. Download crime data from Socrata API → Parquet (host Python)
+source .venv/bin/activate
+python ingestion/download_crime.py
+
+# 2. Run Spark batch job: Parquet → clean → Postgres raw.crime_events
+docker compose exec spark-master /opt/spark/bin/spark-submit --master local[*] /opt/spark/jobs/crime_batch.py
+
+# 3. Run DBT: seed + staging + marts + tests (from inside dbt/ dir)
+cd dbt && dbt build --profiles-dir .
 ```
 
 ## Documentation
