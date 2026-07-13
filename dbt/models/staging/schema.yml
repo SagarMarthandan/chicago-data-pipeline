@@ -1,0 +1,62 @@
+version: 2
+
+sources:
+  - name: raw
+    schema: raw
+    tables:
+      - name: crime_events
+        # Spark writes to raw.crime_events (Phase 1.3)
+        # Columns: id (bigint), case_number, date (timestamp), block, iucr,
+        # primary_type, description, location_description, arrest (bool),
+        # domestic (bool), beat, district (bigint), ward (double),
+        # community_area (int), fbi_code, x_coordinate, y_coordinate,
+        # year (bigint), updated_on (timestamp), latitude (double),
+        # longitude (double)
+
+models:
+  - name: stg_crime_events
+    description: "1:1 with raw.crime_events. Renames columns, casts types, deduplicates on id."
+    columns:
+      - name: crime_id
+        description: "Unique crime case ID — primary key"
+        tests:
+          - unique
+          - not_null
+      - name: occurred_at
+        description: "When the crime occurred (timestamp)"
+        tests:
+          - not_null
+      - name: primary_type
+        description: "Crime category (THEFT, BATTERY, etc.)"
+        tests:
+          - not_null
+      - name: community_area_id
+        description: "FK to dim_community_area. 0 = unassigned."
+        tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+              max_value: 77
+      - name: arrest
+        description: "Whether an arrest was made. Postgres BOOLEAN — can only be true/false/null."
+        tests:
+          - not_null
+      - name: domestic
+        description: "Whether the crime was domestic-related. Postgres BOOLEAN — can only be true/false/null."
+        tests:
+          - not_null
+      - name: latitude
+        description: "Crime location latitude. Can be null (~0.8% of rows)."
+        tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 41.64
+              max_value: 42.03
+              config:
+                where: "latitude IS NOT NULL"
+      - name: longitude
+        description: "Crime location longitude. Can be null (~0.8% of rows)."
+        tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: -87.95
+              max_value: -87.52
+              config:
+                where: "longitude IS NOT NULL"

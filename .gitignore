@@ -8,6 +8,7 @@ docker-compose.override.yml
 
 # Data files (don't commit raw data)
 *.csv
+!dbt/seeds/*.csv
 *.parquet
 *.json.gz
 *.tar.gz
@@ -47,6 +48,7 @@ ENV/
 dbt/target/
 dbt/dbt.log
 dbt/.user.yml
+dbt/profiles.yml
 
 # Airflow
 airflow/airflow.db
@@ -77,7 +79,8 @@ terraform/*.tfstate.*
 terraform/*.tfvars
 
 # IDE / Editor
-.vscode/
+.vscode/*
+!.vscode/settings.json
 .idea/
 *.swp
 *.swo

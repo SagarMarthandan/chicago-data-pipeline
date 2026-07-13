@@ -21,6 +21,7 @@ A running log of changes, errors, and fixes throughout the project. Use this to 
 - [2026-07-11 — Phase 1.2: Ingestion script errors](#2026-07-11--phase-12-ingestion-script-errors)
 - [2026-07-11 — Mermaid diagram rendering errors](#2026-07-11--mermaid-diagram-rendering-errors-across-md-files)
 - [2026-07-13 — Phase 1.3: Spark batch job](#2026-07-13--phase-13-spark-batch-job)
+- [2026-07-13 — Phase 1.4: DBT models](#2026-07-13--phase-14-dbt-models)
 
 ---
 
@@ -380,6 +381,49 @@ Four issues discovered during `docker compose up`:
 - **Idempotent batch jobs:** `mode("overwrite")` means the job is safe to re-run anytime — it replaces the whole table. This is the Phase 1 pattern; Phase 2+ will use upserts.
 - **Docker Compose env propagation:** Spark executors run on workers, not just the master. Both services need Postgres credentials for JDBC writes in cluster mode.
 - **Data persistence:** Named volumes preserve `init.sql` output (schemas, users) but NOT Spark-written tables. Those are application data, created at runtime.
+
+---
+
+## 2026-07-13 — Phase 1.4: DBT models
+
+### Changes
+- Created `dbt/` project: `dbt_project.yml`, `profiles.yml`, `macros/`, `models/staging/`, `models/marts/`, `seeds/`, `tests/`
+- `macros/try_cast.sql` — warehouse-portable cast macro (Postgres `::` cast, BigQuery `SAFE_CAST`)
+- `macros/generate_schema_name.sql` — overrides DBT's schema concatenation so models go to `staging` and `mart` schemas (not `staging_staging`/`staging_mart`)
+- `models/staging/stg_crime_events.sql` — 1:1 with `raw.crime_events`, renames columns, casts types, deduplicates on `id` via `DISTINCT ON`
+- `models/staging/schema.yml` — source definition for `raw.crime_events`
+- `models/marts/dim_date.sql` — date dimension (365 rows, generated from min/max crime dates)
+- `models/marts/dim_community_area.sql` — Chicago's 77 community areas from seed
+- `models/marts/dim_crime_type.sql` — 323 distinct primary_type + description combinations
+- `models/marts/fact_crime_events.sql` — main fact table (263,393 rows) with FKs to all dims
+- `models/staging/schema.yml` + `models/marts/schema.yml` — 31 tests: 20 standard (unique, not_null, relationships) + 11 dbt-expectations (range bounds, value sets)
+- `seeds/community_areas.csv` — 77 community areas from Chicago Data Portal (resource `igwz-8jzy`)
+- `packages.yml` — `metaplane/dbt_expectations` 0.10.10 (Great Expectations macros for dbt)
+- `.vscode/settings.json` — dbt Power User extension config (`dbt.allowListFolders`, `dbt.dbtPythonPathOverride`)
+- `.gitignore` updated — added exceptions for `!dbt/seeds/*.csv`, `!.vscode/settings.json`; added `dbt/profiles.yml` to ignore (contains hardcoded password)
+- `~/.dbt/profiles.yml` — copy of `dbt/profiles.yml` for dbt Power User extension (default profiles location)
+- `dbt build` passes: 1 seed + 5 models + 31 tests = 37/37 PASS
+
+### Errors & Fixes
+
+| # | Error | Root Cause | Fix | Lesson |
+|---|---|---|---|---|
+| 1 | DBT created `staging_mart` and `staging_staging` schemas instead of `mart` and `staging` | DBT's default `generate_schema_name` concatenates profile schema + custom schema (`staging` + `_` + `mart` = `staging_mart`) | Created `macros/generate_schema_name.sql` override that returns the custom schema name as-is | DBT's default schema naming concatenates, doesn't replace. Always override `generate_schema_name` when you want models in specific named schemas. |
+| 2 | `where` config warning in DBT 1.11 | `where` as a top-level property of relationships test is deprecated | Moved `where` under `config:` in the test definition | DBT 1.11 deprecates top-level `where` on tests. Use `config: where: "..."` instead. |
+| 3 | DBT not installed despite being in `pyproject.toml` | `uv sync` was run previously but packages weren't fully installed | Ran `uv sync` again — resolved and installed dbt-core 1.11.12 + dbt-postgres 1.10.2 | Always verify with `dbt --version` after `uv sync`. `pyproject.toml` lists intent; `uv sync` makes it real. |
+| 4 | `expect_column_values_to_be_in_set` on BOOLEAN columns fails: `operator does not exist: boolean = text` | dbt-expectations generates a text comparison (`v.value_field = s.value_field`) that Postgres can't compare to boolean | Replaced with `not_null` — a Postgres BOOLEAN column can only hold true/false/null, so the in-set test adds no value | Don't use `expect_column_values_to_be_in_set` on Postgres BOOLEAN columns. The type mismatch is unfixable without casting, and the test is meaningless since BOOLEAN can't hold other values. |
+| 5 | `expect_column_values_to_be_between` on longitude failed (801 rows) | Bounds `[-87.9, -87.5]` were too tight — actual data ranges `[-87.94, -87.52]` | Widened to `[-87.95, -87.52]` based on actual `min()/max()` from the data | Always check actual data bounds with `SELECT min(), max()` before setting range test thresholds. Chicago's city limits extend slightly beyond the commonly cited rounded values. |
+| 6 | dbt Power User extension "dbt language server is not running" | Extension couldn't find `dbt_project.yml` (in `dbt/` subdirectory, not workspace root) and `profiles.yml` (in `dbt/`, not `~/.dbt/`) | Created `.vscode/settings.json` with `"dbt.allowListFolders": ["dbt"]` and copied `profiles.yml` to `~/.dbt/` | dbt Power User scans workspace root by default. For dbt projects in subdirectories, set `dbt.allowListFolders` in `.vscode/settings.json` and ensure `profiles.yml` is in `~/.dbt/`. |
+
+### Lessons
+- **DBT schema naming:** The default `generate_schema_name` macro concatenates the profile schema with the custom schema. Override it when you want models in specific named schemas (`staging`, `mart`).
+- **DBT 1.11 test config:** The `where` clause on generic tests must be nested under `config:`, not as a top-level property.
+- **Staging dedup:** Use `DISTINCT ON (id) ... ORDER BY id, updated_at DESC` in Postgres for deduplication that keeps the most recently updated row per id.
+- **Community area 0:** `community_area_id = 0` means "unassigned" in the crime data — it's not a real community area. The relationships test uses `where: "community_area_id != 0"` to exclude it from referential integrity checks.
+- **Seed data:** Chicago's 77 community areas are available via Socrata API at resource `igwz-8jzy` (Boundaries - Community Areas). Selected `area_numbe` and `community` columns for the seed CSV.
+- **dbt-expectations on BOOLEAN:** `expect_column_values_to_be_in_set` fails on Postgres BOOLEAN columns due to type mismatch. Use `not_null` instead — BOOLEAN can't hold values outside {true, false, null}.
+- **Data bounds validation:** Always check actual `min()/max()` before setting range test thresholds. Chicago's longitude ranges `[-87.94, -87.52]`, wider than the commonly cited `[-87.9, -87.5]`.
+- **dbt Power User extension:** Needs `dbt_project.yml` discoverable via `dbt.allowListFolders` in `.vscode/settings.json` and `profiles.yml` in `~/.dbt/` (default location).
 
 ---
 

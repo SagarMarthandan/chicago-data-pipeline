@@ -1,0 +1,44 @@
+# DBT Project — Chicago Crime + Divvy Pipeline
+#
+# This project transforms raw data (loaded by Spark) into analytics-ready
+# marts in Postgres. Phase 1 covers crime data only; Divvy tables are
+# added in Phase 2 (streaming).
+
+name: 'chicago_crime'
+version: '1.0.0'
+config-version: 2
+
+# Profile — matches the profile name in profiles.yml
+profile: 'chicago_crime'
+
+# Model paths — DBT looks here for .sql model files
+model-paths: ["models"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+
+# Where DBT stores compiled SQL and run artifacts
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# ============================================================
+# Model Materialization Defaults
+# ============================================================
+# Override per-model in models/staging/schema.yml or models/marts/schema.yml
+models:
+  chicago_crime:
+    staging:
+      +materialized: view
+      +schema: staging
+    marts:
+      +materialized: table
+      +schema: mart
+
+# ============================================================
+# Seeds
+# ============================================================
+seeds:
+  chicago_crime:
+    +schema: mart

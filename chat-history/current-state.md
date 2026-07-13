@@ -10,7 +10,7 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 
 - **Repo:** `~/chicago-data-pipeline/` (WSL, Ubuntu on Windows 10)
 - **Git:** initialized on `main`, no commits yet (user commits manually)
-- **Phase:** 1 (Batch Foundation) — Phase 1.1 (Docker) + Phase 1.2 (Ingestion) + Phase 1.3 (Spark batch) COMPLETE. Next: Phase 1.4 (DBT models)
+- **Phase:** 1 (Batch Foundation) — Phase 1.1 (Docker) + 1.2 (Ingestion) + 1.3 (Spark batch) + 1.4 (DBT models) COMPLETE. Next: Phase 1.5 (Airflow DAG)
 - **AI mode:** AI-writes-code (user said "you write it" — explicit mode switch from Socratic)
 
 ## Tech Stack
@@ -70,11 +70,29 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 - Run command: `docker compose exec spark-master /opt/spark/bin/spark-submit --master local[*] /opt/spark/jobs/crime_batch.py`
 - **Note:** `spark-submit` is NOT on PATH in apache/spark image — use full path `/opt/spark/bin/spark-submit`
 
+### Phase 1.4 — DBT Models (COMPLETE)
+- `dbt/` project: `dbt_project.yml`, `profiles.yml`, macros, models, seeds
+- `macros/try_cast.sql` — warehouse-portable cast (Postgres `::` vs BigQuery `SAFE_CAST`)
+- `macros/generate_schema_name.sql` — overrides DBT schema concatenation (models go to `staging`/`mart`, not `staging_staging`/`staging_mart`)
+- `models/staging/stg_crime_events.sql` — view: rename, cast, dedup on id via `DISTINCT ON`
+- `models/marts/` — `dim_date` (365 rows), `dim_community_area` (77 rows), `dim_crime_type` (323 rows), `fact_crime_events` (263,393 rows)
+- `seeds/community_areas.csv` — 77 community areas from Chicago Data Portal (`igwz-8jzy`)
+- `models/staging/schema.yml` + `models/marts/schema.yml` — 31 tests total: 20 standard (unique, not_null, relationships) + 11 dbt-expectations (range bounds, value sets)
+- `packages.yml` — `metaplane/dbt_expectations` 0.10.10 (Great Expectations macros for dbt)
+- `.vscode/settings.json` — `dbt.allowListFolders: ["dbt"]`, `dbt.dbtPythonPathOverride: .venv/bin/python` for dbt Power User extension
+- `.gitignore` updated — `!dbt/seeds/*.csv` (seed must be committable), `!.vscode/settings.json` (extension config shared), `dbt/profiles.yml` ignored (has password)
+- `~/.dbt/profiles.yml` — copy of dbt/profiles.yml for dbt Power User extension (default location)
+- DBT installed: dbt-core 1.11.12 + dbt-postgres 1.10.2 (via `uv sync`)
+- Run: `cd dbt && dbt build --profiles-dir .` (37/37 PASS)
+- **Key lessons:** (1) DBT's default `generate_schema_name` concatenates — override it. (2) `expect_column_values_to_be_in_set` fails on Postgres BOOLEAN — use `not_null`. (3) dbt Power User needs `dbt.allowListFolders` for subdirectory projects.
+
 ### Files Created
 ```
 ~/chicago-data-pipeline/
 ├── .env.example              ← env var template (Airflow 3.0 SimpleAuthManager config)
 ├── .gitignore
+├── .vscode/
+│   └── settings.json         ← dbt Power User config (allowListFolders, Python path)
 ├── AGENTS.md                 ← AI assistant rules (14 rules, read first)
 ├── README.md                 ← 3 Mermaid diagrams + progress table
 ├── changelog.md              ← errors/fixes/lessons log (with TOC)
@@ -94,6 +112,26 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 │       └── crime_batch.py    ← Spark batch ETL: Parquet → clean → Postgres (Phase 1.3)
 ├── ingestion/
 │   └── download_crime.py     ← Socrata API → Parquet (Phase 1.2)
+├── dbt/                      ← DBT transformation project (Phase 1.4)
+│   ├── dbt_project.yml       ← model config, materialization, schema mapping
+│   ├── profiles.yml          ← Postgres connection (NOT committed to git)
+│   ├── macros/
+│   │   ├── try_cast.sql      ← warehouse-portable cast macro
+│   │   └── generate_schema_name.sql ← override schema concatenation
+│   ├── models/
+│   │   ├── staging/
+│   │   │   ├── stg_crime_events.sql ← view: rename, cast, dedup
+│   │   │   └── schema.yml    ← source definition + staging tests (unique, not_null, dbt-expectations)
+│   │   └── marts/
+│   │       ├── dim_date.sql
+│   │       ├── dim_community_area.sql
+│   │       ├── dim_crime_type.sql
+│   │       ├── fact_crime_events.sql
+│   │       └── schema.yml    ← 31 data tests (20 standard + 11 dbt-expectations)
+│   ├── packages.yml          ← dbt-expectations 0.10.10 (Great Expectations macros)
+│   ├── package-lock.yml      ← auto-generated lock file
+│   └── seeds/
+│       └── community_areas.csv ← 77 community areas from Chicago Data Portal
 ├── data/                     ← Parquet output (gitignored)
 │   └── raw/crime/crime_2023.parquet ← 263K rows, 11.5 MB
 ├── chat-history/             ← conversation reference (read current-state.md first)
@@ -118,7 +156,8 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
     │   ├── README.md         ← explains the system
     │   ├── phase-1.1-docker.md ← Phase 1.1 snapshot (complete)
     │   ├── phase-1.2-ingestion.md ← Phase 1.2 snapshot (complete)
-    │   └── phase-1.3-spark-batch.md ← Phase 1.3 snapshot (complete)
+    │   ├── phase-1.3-spark-batch.md ← Phase 1.3 snapshot (complete)
+    │   └── phase-1.4-dbt-models.md ← Phase 1.4 snapshot (complete)
     └── conventions/
         ├── airflow.md
         ├── dbt.md
@@ -128,17 +167,17 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 
 ## Next Steps
 
-Phase 1.1 (Docker), Phase 1.2 (Ingestion), and Phase 1.3 (Spark batch) are **complete and verified**. Next:
+Phase 1.1 (Docker), 1.2 (Ingestion), 1.3 (Spark batch), and 1.4 (DBT models) are **complete and verified**. Next:
 
-1. **Phase 1.4: DBT models** (`dbt/` project)
-   - Staging: `stg_crime_events.sql` — light cleaning on top of `raw.crime_events` (rename columns, cast types, dedup on `id`)
-   - `try_cast` macro — dispatches per-warehouse (Postgres `::` cast, BigQuery `SAFE_CAST`)
-   - Marts: `dim_date`, `dim_community_area`, `dim_crime_type`, `fact_crime_events`
-   - Tests: `schema.yml` with unique/not_null on `crime_id`, relationships on `community_area_id`
-   - Requires: `raw.crime_events` table (done — 263,393 rows)
-2. **Phase 1.5: Airflow DAG** (`airflow/dags/crime_batch_dag.py`)
+1. **Phase 1.5: Airflow DAG** (`airflow/dags/crime_batch_dag.py`)
    - Orchestrate: download_crime → spark_crime_batch → dbt_run → dbt_test
-   - Requires: working Spark job (done) + DBT models (Phase 1.4)
+   - Use Airflow's `DockerOperator` or `BashOperator` to run the Spark job, `BashOperator` for DBT
+   - Schedule: `@daily` (but start with `@manual` while debugging)
+   - Requires: working Spark job (done) + DBT models (done)
+   - New: Airflow DAG file, task dependencies, retry logic, XCom for task status
+2. **Phase 1.6: Phase 1 deliverable & verification** — end-to-end pipeline test
+   - `docker compose up` → trigger DAG → all 4 steps run → DBT marts queryable
+   - This is the Phase 1 gate: Phase 2 unlocks when this works
 
 ## Active Constraints
 
@@ -170,6 +209,10 @@ Phase 1.1 (Docker), Phase 1.2 (Ingestion), and Phase 1.3 (Spark batch) are **com
 - **WSL2 memory limit:** Increased from 4GB to 8GB via `C:\Users\sagar\.wslconfig` (user did manually). 4GB was bottlenecking with 6 Docker services. Apply with `wsl --shutdown` then reopen terminal.
 - **apache/spark PATH:** `spark-submit` is not on PATH in the apache/spark container. Always use `/opt/spark/bin/spark-submit` when exec'ing into spark-master.
 - **Spark-written tables not persisted by init.sql:** `raw.crime_events` is created by the Spark job at runtime, not by `init.sql`. If the Postgres volume is wiped, re-run the batch job (idempotent via `overwrite` mode).
+- **DBT profiles.yml has hardcoded password:** `dbt/profiles.yml` contains `chicago1234` in plaintext. It's in `.gitignore` (not committed), but for Phase 4 (cloud) this should use environment variables or a secrets manager.
+- **dbt-expectations on Postgres BOOLEAN:** `expect_column_values_to_be_in_set` fails with `boolean = text` operator error. Use `not_null` instead — BOOLEAN can't hold values outside {true, false, null}.
+- **dbt Power User extension:** Configured via `.vscode/settings.json` (`dbt.allowListFolders`, `dbt.dbtPythonPathOverride`) and `~/.dbt/profiles.yml`. User may need to reload IDE window if lineage doesn't render.
+- **DBT run location:** dbt commands must be run from inside the `dbt/` directory (where `dbt_project.yml` lives), not from repo root or `.venv/bin/`.
 
 ## Chat History Chunks
 
@@ -183,3 +226,5 @@ Phase 1.1 (Docker), Phase 1.2 (Ingestion), and Phase 1.3 (Spark batch) are **com
 | `2026-07-09/05-chat-history-system.md` | Chat-history folder creation |
 | `2026-07-09/06-bitnami-to-apache-spark.md` | Bitnami → apache/spark migration |
 | `2026-07-09/07-airflow-3-runtime-fixes.md` | 6 runtime fixes to get all services healthy |
+| `2026-07-13/01-phase-1.3-spark-batch.md` | Spark batch job: Parquet → clean → Postgres, docker-compose env vars, spark-submit PATH fix |
+| `2026-07-13/02-phase-1.4-dbt-models.md` | DBT project scaffold, staging + marts, dbt-expectations, generate_schema_name override, dbt Power User extension fix |

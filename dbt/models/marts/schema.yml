@@ -1,0 +1,99 @@
+version: 2
+
+models:
+  - name: dim_date
+    description: "Date dimension from min to max crime date."
+    columns:
+      - name: date_key
+        description: "Date (no time) — PK for date dimension"
+        tests:
+          - unique
+          - not_null
+      - name: year
+        tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 2023
+              max_value: 2023
+      - name: month
+        tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 1
+              max_value: 12
+
+  - name: dim_community_area
+    description: "Chicago's 77 community areas. Static reference data loaded via dbt seed."
+    columns:
+      - name: community_area_id
+        description: "Community area number (1-77). PK."
+        tests:
+          - unique
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 1
+              max_value: 77
+      - name: community_area_name
+        tests:
+          - not_null
+
+  - name: dim_crime_type
+    description: "Distinct primary_type + description combinations."
+    columns:
+      - name: crime_type_key
+        description: "Surrogate key: primary_type || '|' || description"
+        tests:
+          - unique
+          - not_null
+      - name: primary_type
+        tests:
+          - not_null
+
+  - name: fact_crime_events
+    description: "Main crime fact table. One row per crime event with FKs to dimensions."
+    columns:
+      - name: crime_id
+        description: "Primary key — unique crime case ID"
+        tests:
+          - unique
+          - not_null
+      - name: date_key
+        description: "FK to dim_date"
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_date')
+              field: date_key
+      - name: community_area_id
+        description: "FK to dim_community_area. 0 = unassigned (not in dim)."
+        tests:
+          - relationships:
+              to: ref('dim_community_area')
+              field: community_area_id
+              # 0 = unassigned (not a real community area). Exclude from
+              # referential integrity check so the test passes on valid FKs only.
+              config:
+                where: "community_area_id != 0"
+      - name: crime_type_key
+        description: "FK to dim_crime_type"
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_crime_type')
+              field: crime_type_key
+      - name: latitude
+        description: "Crime location latitude. Can be null."
+        tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 41.64
+              max_value: 42.03
+              config:
+                where: "latitude IS NOT NULL"
+      - name: longitude
+        description: "Crime location longitude. Can be null."
+        tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: -87.95
+              max_value: -87.52
+              config:
+                where: "longitude IS NOT NULL"
