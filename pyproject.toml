@@ -5,6 +5,7 @@ requires-python = ">=3.13"
 dependencies = [
     "dbt-core>=1.11.12",
     "dbt-postgres>=1.10.2",
+    "kafka-python>=3.0.8",
     "psycopg2-binary>=2.9.12",
     "python-dotenv>=1.2.2",
     "requests>=2.34.2",

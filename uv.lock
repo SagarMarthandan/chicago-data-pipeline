@@ -111,6 +111,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "dbt-core" },
     { name = "dbt-postgres" },
+    { name = "kafka-python" },
     { name = "psycopg2-binary" },
     { name = "python-dotenv" },
     { name = "requests" },
@@ -121,6 +122,7 @@ dependencies = [
 requires-dist = [
     { name = "dbt-core", specifier = ">=1.11.12" },
     { name = "dbt-postgres", specifier = ">=1.10.2" },
+    { name = "kafka-python", specifier = ">=3.0.8" },
     { name = "psycopg2-binary", specifier = ">=2.9.12" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "requests", specifier = ">=2.34.2" },
@@ -382,6 +384,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/19/74/a633ee74eb36c44aa6d1095e7cc5569bebf04342ee146178e2d36600708b/jsonschema_specifications-2025.9.1.tar.gz", hash = "sha256:b540987f239e745613c7a9176f3edb72b832a4ac465cf02712288397832b5e8d", size = 32855, upload-time = "2025-09-08T01:34:59.186Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/41/45/1a4ed80516f02155c51f51e8cedb3c1902296743db0bbc66608a0db2814f/jsonschema_specifications-2025.9.1-py3-none-any.whl", hash = "sha256:98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe", size = 18437, upload-time = "2025-09-08T01:34:57.871Z" },
+]
+
+[[package]]
+name = "kafka-python"
+version = "3.0.8"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/86/61/c5132aae897587d9135322ca66d46f14f5d4f11fef41b24963f1a5ab43d1/kafka_python-3.0.8.tar.gz", hash = "sha256:0e9d89d40ae1cb45eae2f89fa9abff919c49d54299a6b3774b5261d6d6ff11e2", size = 513378, upload-time = "2026-07-09T18:53:02.35Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/87/8d/e21b9560d7b915657320b62021be204c60216a0a4c3fe3da3f76e20371a0/kafka_python-3.0.8-py3-none-any.whl", hash = "sha256:e0fd7d3a70e4c85506c747e722cabb65a7beaaa7ccd95840d10bf653d77da7ed", size = 614077, upload-time = "2026-07-09T18:53:00.374Z" },
 ]
 
 [[package]]

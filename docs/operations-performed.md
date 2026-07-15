@@ -20,6 +20,7 @@ A chronological log of operations, files created, and structural changes made to
 - [2026-07-13 — Phase 1.6: Verification](#2026-07-13--phase-16-verification)
 - [2026-07-15 — Phase 2.1: Divvy GBFS Data Source Exploration](#2026-07-15--phase-21-divvy-gbfs-data-source-exploration)
 - [2026-07-15 — Phase 2.2: Kafka + Zookeeper Docker Services](#2026-07-15--phase-22-kafka--zookeeper-docker-services)
+- [2026-07-15 — Phase 2.3: Kafka Producer](#2026-07-15--phase-23-kafka-producer)
 
 ---
 
@@ -571,3 +572,35 @@ Added Kafka and Zookeeper to `docker-compose.yml` as the streaming backbone for 
 - Produced second message via host listener (localhost:29092) — success, confirms host-side access works
 - Deleted test topic to start fresh for Phase 2.3 producer
 - Phase 1 services unaffected (were stopped, not running during this test)
+
+---
+
+## 2026-07-15 — Phase 2.3: Kafka Producer
+
+### What was done
+Created the Kafka producer script that polls the Divvy GBFS `station_status.json` feed and publishes each station's status as a JSON message to the `divvy_station_status` topic. Verified end-to-end: real Divvy data flowing through Kafka with proper partition distribution.
+
+### Files Created
+- `kafka/producers/divvy_producer.py` — Python script that polls GBFS every 60s, publishes each station as JSON to Kafka. Key = station_id (partition ordering), value = full station status JSON. Graceful SIGINT/SIGTERM shutdown. Supports `--once` (single poll), `--interval` (custom cadence), `--bootstrap` (Kafka address).
+
+### Files Modified
+- `pyproject.toml` / `uv.lock` — added `kafka-python` 3.0.8 to host venv
+- `airflow/requirements.txt` — added `kafka-python` (for Phase 2.6 when DAG runs the producer)
+- `docker-compose.yml` — added `./kafka:/opt/airflow/kafka` volume mount to Airflow common config (for Phase 2.6)
+
+### Key Design Decisions
+- **Message key = station_id** — ensures same station always goes to same partition, preserving chronological order per station
+- **acks="all"** — safest delivery guarantee (waits for all in-sync replicas)
+- **Graceful shutdown** — SIGINT/SIGTERM sets a flag, current poll finishes, messages flush, producer closes cleanly
+- **Retry with backoff on connect** — Kafka may still be starting up (5 retries, 3s apart)
+- **Consistent poll cadence** — sleep time = interval - elapsed, so polls don't drift
+- **Explicit topic creation (3 partitions)** — auto-create defaults to 1 partition; `KAFKA_NUM_PARTITIONS` env var didn't work with Confluent image; explicit `kafka-topics --create` is the correct approach
+
+### Verification
+- `--once` mode: fetched 2,016 stations, sent 2,016 messages in 0.88s
+- Topic auto-created with 1 partition (broker default) → deleted, created explicitly with 3 partitions
+- Re-ran `--once`: 2,016 messages distributed across 3 partitions (720 + 661 + 635)
+- Console consumer verified real Divvy station data (station_id, bikes, docks, is_renting, etc.)
+- Continuous mode (5s interval): 2 polls in 10s, graceful shutdown on SIGTERM
+- Total after all tests: 6,048 messages (3 polls × 2,016 stations)
+- Topic deleted for clean Phase 2.4 start

@@ -53,4 +53,5 @@ chat-history/current-state.md       ← handoff for the NEXT session
 | `phase-1.6-verification.md` | Phase 1 end-to-end verification | Complete |
 | `phase-2.1-gbfs-data-source.md` | Divvy GBFS data source exploration | Complete |
 | `phase-2.2-kafka.md` | Kafka + Zookeeper Docker services | Complete |
-| _next: `phase-2.3-divvy-producer.md`_ | Kafka producer (GBFS → topic) | Not started |
+| `phase-2.3-divvy-producer.md` | Kafka producer (GBFS → topic) | Complete |
+| _next: `phase-2.4-spark-streaming.md`_ | Spark Structured Streaming (Kafka → Postgres) | Not started |

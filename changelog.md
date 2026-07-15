@@ -26,6 +26,7 @@ A running log of changes, errors, and fixes throughout the project. Use this to 
 - [2026-07-13 — Phase 1.5: Airflow DAG](#2026-07-13--phase-15-airflow-dag)
 - [2026-07-15 — Phase 2.1: Divvy GBFS data source exploration](#2026-07-15--phase-21-divvy-gbfs-data-source-exploration)
 - [2026-07-15 — Phase 2.2: Kafka + Zookeeper Docker services](#2026-07-15--phase-22-kafka--zookeeper-docker-services)
+- [2026-07-15 — Phase 2.3: Kafka producer](#2026-07-15--phase-23-kafka-producer)
 
 ---
 
@@ -544,3 +545,34 @@ These are not technical errors — they are process mistakes made by the AI assi
 - **Single-broker Kafka needs replication overrides** — `KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR`, `KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR`, and `KAFKA_TRANSACTION_STATE_LOG_MIN_ISR` all default to 3 (for production clusters). With a single broker, they must be set to 1 or Kafka silently fails to create internal topics.
 - **Two listeners for dev Kafka** — internal (`kafka:9092`) for Docker-network services, external (`localhost:29092`) for host-side testing. The `KAFKA_ADVERTISED_LISTENERS` config tells clients where to connect; without the host listener, you can't run `kafka-console-consumer` from your terminal.
 - **Healthcheck with `kafka-broker-api-versions`** — more reliable than TCP port check. Queries Kafka's API endpoint and confirms the broker is actually serving, not just listening on a port. Needs `start_period: 20s` — Kafka takes ~30-40s to fully start.
+
+---
+
+## 2026-07-15 — Phase 2.3: Kafka producer
+
+### Changes
+- Created `kafka/producers/divvy_producer.py` — polls Divvy GBFS every 60s, publishes to Kafka
+- Added `kafka-python` 3.0.8 to host venv and Airflow requirements
+- Added `./kafka:/opt/airflow/kafka` volume mount to Airflow in docker-compose.yml
+
+### Errors & Fixes
+
+| # | Error | Root Cause | Fix |
+|---|---|---|---|
+| 1 | `ImportError: cannot import name 'NoBrokersAvailable'` | `NoBrokersAvailable` was removed in kafka-python 3.0.x | Catch `KafkaError` (base class) instead |
+| 2 | Auto-created topic had 1 partition (not 3) | `KAFKA_NUM_PARTITIONS` env var not applied by Confluent image — `server.properties` still showed `num.partitions=1` | Explicitly create topic with `kafka-topics --create --partitions 3`. Auto-create uses broker defaults; explicit creation is the correct approach for custom partition counts |
+
+### Key Decisions
+
+| Decision | Choice | Why |
+|---|---|---|
+| Message key | `station_id` (string) | Same station → same partition → chronological order per station. Critical for time-series analysis. |
+| Delivery guarantee | `acks="all"` | Safest — waits for all in-sync replicas. For single broker, equivalent to acks=1. |
+| Shutdown | SIGINT/SIGTERM → flag → flush → close | Graceful shutdown prevents message loss. Pending messages are flushed before exit. |
+| Poll cadence | `sleep = interval - elapsed` | Prevents drift — polls at consistent intervals regardless of fetch time. |
+| Topic creation | Explicit (not auto-create) | Auto-create defaults to 1 partition. Explicit creation controls partition count. Auto-create still enabled as fallback. |
+
+### Lessons
+- **Auto-create uses broker defaults, not your desired config** — `KAFKA_NUM_PARTITIONS` env var didn't work with the Confluent image (`server.properties` showed `num.partitions=1`). For custom partition counts, create topics explicitly with `kafka-topics --create --partitions N`. Auto-create is a convenience, not a configuration mechanism.
+- **kafka-python 3.0.x removed `NoBrokersAvailable`** — the exception hierarchy changed. Use `KafkaError` (base class) for catch-all error handling. Always check the installed version's API, not just documentation from older versions.
+- **Key-based partitioning distributes evenly** — with 3 partitions and station_id as key, messages split 720/661/635 (not exactly equal, but close). The hash of station_id determines the partition — same station always goes to the same partition.

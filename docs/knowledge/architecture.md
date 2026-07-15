@@ -290,7 +290,7 @@ graph TB
 | `pyproject.toml` | uv (host only) | `uv sync` reads it | Host dev only |
 | `uv.lock` | uv (host only) | `uv sync` reads it | Host dev only |
 | `.venv/` | Host Python | Created by `uv sync` | Host dev only |
-| `kafka/producers/*.py` | kafka container (future) | Bind mount (Phase 2.3) | Every startup (runtime) |
+| `kafka/producers/divvy_producer.py` | Host Python (Phase 2.3), Airflow container (Phase 2.6) | Bind mount `./kafka:/opt/airflow/kafka` | Host: now, Airflow: Phase 2.6 |
 | `spark/jobs/divvy_stream.py` | spark container (future) | Bind mount (Phase 2.4) | Every startup (runtime) |
 
 ---
@@ -318,6 +318,13 @@ graph TB
     K -->|"KAFKA_BOOTSTRAP_SERVERS<br/>kafka:9092"| SW["spark-worker"]
     K -->|"host:29092<br/>console consumer"| HOST["Host terminal<br/>for testing"]
 ```
+
+**Producer (`kafka/producers/divvy_producer.py`):**
+- Runs on host Python (connects to `localhost:29092`)
+- Polls Divvy GBFS `station_status.json` every 60 seconds
+- Publishes each station as JSON message (key=station_id, value=station JSON)
+- In Phase 2.6, will run inside Airflow container (connects to `kafka:9092`)
+- `./kafka:/opt/airflow/kafka` volume mount added to Airflow for this purpose
 
 **Why no custom Dockerfile?** Confluent images are configured entirely via environment variables. No additional packages or JARs needed — unlike Spark (needs JDBC driver) or Airflow (needs Docker CLI + providers).
 

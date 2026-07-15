@@ -121,6 +121,9 @@ x-airflow-common: &airflow-common
     # DBT profiles for Airflow container (host: postgres, not localhost)
     - ./airflow/dbt_profiles:/opt/airflow/dbt_profiles
 
+    # Kafka producer scripts — mounted so Airflow can start the producer (Phase 2.6)
+    - ./kafka:/opt/airflow/kafka
+
 
 services:
 
