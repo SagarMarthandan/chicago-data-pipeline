@@ -290,5 +290,53 @@ graph TB
 | `pyproject.toml` | uv (host only) | `uv sync` reads it | Host dev only |
 | `uv.lock` | uv (host only) | `uv sync` reads it | Host dev only |
 | `.venv/` | Host Python | Created by `uv sync` | Host dev only |
+| `kafka/producers/*.py` | kafka container (future) | Bind mount (Phase 2.3) | Every startup (runtime) |
+| `spark/jobs/divvy_stream.py` | spark container (future) | Bind mount (Phase 2.4) | Every startup (runtime) |
 
 ---
+
+### 9. How Kafka + Zookeeper Link to Docker (Phase 2.2)
+
+Kafka and Zookeeper use pre-built Confluent images (no custom Dockerfile needed):
+
+```mermaid
+graph TB
+    subgraph "Zookeeper"
+        ZK["confluentinc/cp-zookeeper:7.6.0<br/>port 2181 (internal)"]
+        ZKDATA[(zookeeper_data<br/>zookeeper_log)]
+        ZKDATA -->|persists| ZK
+    end
+
+    subgraph "Kafka"
+        K["confluentinc/cp-kafka:7.6.0<br/>port 9092 (internal)<br/>port 29092 (host)"]
+        KDATA[(kafka_data)]
+        KDATA -->|persists| K
+    end
+
+    ZK -->|"coordinates broker<br/>via zookeeper:2181"| K
+    K -->|"KAFKA_BOOTSTRAP_SERVERS<br/>kafka:9092"| SM["spark-master"]
+    K -->|"KAFKA_BOOTSTRAP_SERVERS<br/>kafka:9092"| SW["spark-worker"]
+    K -->|"host:29092<br/>console consumer"| HOST["Host terminal<br/>for testing"]
+```
+
+**Why no custom Dockerfile?** Confluent images are configured entirely via environment variables. No additional packages or JARs needed — unlike Spark (needs JDBC driver) or Airflow (needs Docker CLI + providers).
+
+**Two listeners:**
+- `PLAINTEXT://kafka:9092` — Docker network internal. Spark Structured Streaming and the producer connect here.
+- `PLAINTEXT_HOST://localhost:29092` — host machine. For `kafka-console-consumer` testing from your terminal.
+
+**Startup order:**
+```mermaid
+graph LR
+    ZK["zookeeper<br/>healthcheck: echo srvr \| nc localhost 2181"] -->|service_healthy| K["kafka<br/>healthcheck: kafka-broker-api-versions<br/>start_period: 20s"]
+```
+
+Zookeeper must be healthy before Kafka starts. Kafka takes ~30-40s to fully initialize (hence `start_period: 20s` on the healthcheck).
+
+**Single-broker overrides (critical):**
+Three Kafka settings default to 3 (for production clusters). With a single broker, they MUST be set to 1:
+- `KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1`
+- `KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1`
+- `KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1`
+
+Without these, Kafka can't create `__consumer_offsets` and consumers can't commit offsets.

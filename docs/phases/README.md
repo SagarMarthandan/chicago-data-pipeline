@@ -52,4 +52,5 @@ chat-history/current-state.md       ← handoff for the NEXT session
 | `phase-1.5-airflow-dag.md` | Airflow DAG + dbt Docker image | Complete |
 | `phase-1.6-verification.md` | Phase 1 end-to-end verification | Complete |
 | `phase-2.1-gbfs-data-source.md` | Divvy GBFS data source exploration | Complete |
-| _next: `phase-2.2-kafka.md`_ | Kafka + Zookeeper Docker services | Not started |
+| `phase-2.2-kafka.md` | Kafka + Zookeeper Docker services | Complete |
+| _next: `phase-2.3-divvy-producer.md`_ | Kafka producer (GBFS → topic) | Not started |

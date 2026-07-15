@@ -1,18 +1,21 @@
 # ============================================================
-# Docker Compose — Phase 1: Batch Foundation
+# Docker Compose — Phase 1 (Batch) + Phase 2 (Streaming)
 # ============================================================
-# Services: Postgres, Spark (master + worker), Airflow (init + webserver + scheduler)
-# Kafka + Grafana are added in Phase 2 and 3 respectively.
+# Services: Postgres, Spark (master + worker), Airflow (init + webserver +
+#   scheduler + dag-processor), Kafka + Zookeeper (Phase 2)
+# Grafana is added in Phase 3.
 #
 # Before first run:
 #   1. cp .env.example .env   (fill in real values)
-#   2. docker compose build    (builds custom Airflow + Spark images)
+#   2. docker compose build    (builds custom Airflow + Spark + dbt images)
 #   3. docker compose up -d    (starts all services)
 #
 # After startup:
 #   - Airflow UI:  http://localhost:8080  (admin / admin)
 #   - Spark UI:    http://localhost:8180
 #   - Postgres:    localhost:5432
+#   - Kafka:       localhost:29092  (host access)
+#                  kafka:9092      (inside Docker network)
 # ============================================================
 
 
@@ -178,6 +181,9 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
+      # Kafka bootstrap server — used by Spark Structured Streaming (Phase 2.4)
+      # to read from the divvy_station_status topic.
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
     # Official apache/spark uses spark-class to start master/worker directly.
     # Bitnami's SPARK_MODE=master env var doesn't exist in the official image.
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
@@ -218,6 +224,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
+      # Kafka bootstrap server — used by Spark Structured Streaming executors
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
     # Worker connects to master via spark://spark-master:7077
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     depends_on:
@@ -300,17 +308,113 @@ services:
 
   # ============ DBT (build-only) ============
   # This service is never started — it exists only so `docker compose build`
-  # builds the dbt image. The DAG runs it on-demand via `docker run --rm`.
-  # Separated from Airflow because dbt-core 1.11 requires protobuf >=6.0
-  # which conflicts with Airflow 3.0's protobuf 4.x pin.
   dbt-build:
     build: ./dbt
     image: chicago-data-pipeline-dbt:latest
     command: ["echo", "build-only service — not meant to run"]
 
+
+  # ============ Kafka + Zookeeper (Phase 2) ============
+  # Kafka is the streaming backbone for Phase 2:
+  #   Divvy GBFS API → Kafka producer → topic "divvy_station_status"
+  #   → Spark Structured Streaming → Postgres raw.station_status
+  #
+  # Architecture:
+  #   zookeeper — Kafka's coordination service (manages broker metadata,
+  #               leader election, topic configs). Kafka 3.x+ can run without
+  #               it (KRaft mode), but learning Zookeeper first is more
+  #               educational and is the traditional setup.
+  #   kafka     — the broker itself. Producers write messages to topics,
+  #               consumers read from them. Spark Streaming is our consumer.
+  #
+  # Listeners:
+  #   PLAINTEXT       (kafka:9092)   — internal Docker network (Spark, producer)
+  #   PLAINTEXT_HOST  (localhost:29092) — host access for console consumer testing
+  #
+  # Images: Confluent Platform 7.6.0 (stable, free, production-hardened).
+  # Not using `latest` — pinned for reproducibility.
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    restart: unless-stopped
+    environment:
+      # Port Zookeeper listens on for client connections (Kafka connects here)
+      ZOOKEEPER_CLIENT_PORT: 2181
+      # Tick time — basic time unit in ms for Zookeeper's internal timing
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      # Named volume — Zookeeper data survives container restarts
+      - zookeeper_data:/var/lib/zookeeper/data
+      - zookeeper_log:/var/lib/zookeeper/log
+    healthcheck:
+      # Check if Zookeeper is responding on client port
+      test: ["CMD-SHELL", "echo srvr | nc localhost 2181 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    restart: unless-stopped
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      # How Kafka finds Zookeeper — Docker service name + client port
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+
+      # Advertised listeners — what Kafka tells clients to connect to.
+      # Two listeners:
+      #   PLAINTEXT       → kafka:9092     (inside Docker network)
+      #   PLAINTEXT_HOST  → localhost:29092 (from host machine)
+      # Without the host listener, you can't run kafka-console-consumer
+      # from your terminal for testing.
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+
+      # Maps listener names to security protocols.
+      # Both are PLAINTEXT (no SSL/SASL — fine for local dev).
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+
+      # Which listener Kafka uses for inter-broker communication.
+      # With a single broker, this is the internal listener.
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      # Single broker → replication factor 1 for internal topics.
+      # Default is 3 (for production clusters). Must override for single-broker.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+
+      # Auto-create topics — convenient for dev/learning.
+      # In production you'd set this to false and create topics explicitly.
+      # Learning checkpoint: if the topic doesn't exist and this is false,
+      # the producer's messages go nowhere silently.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+
+      # Group ID for Kafka Connect (not used yet, but avoids warnings)
+      CONFLUENT_SUPPORT_METRICS_ENABLE: "false"
+    ports:
+      # Internal listener (Docker network) — Spark + producer connect here
+      - "9092:9092"
+      # External listener (host) — for kafka-console-consumer testing
+      - "29092:29092"
+    volumes:
+      # Named volume — Kafka data (messages, offsets) survives restarts
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      # Check if Kafka is responding by querying broker metadata.
+      # Uses kafka-broker-api-versions (built into Confluent image).
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 2>/dev/null || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
 # ============ Named Volumes ============
 # Named volumes persist data across container rebuilds.
-# Without these, `docker compose down` destroys all data.
 volumes:
   postgres_data:
   airflow_logs:
+  kafka_data:
+  zookeeper_data:
+  zookeeper_log:

@@ -19,6 +19,7 @@ A chronological log of operations, files created, and structural changes made to
 - [2026-07-13 — Phase 1.5: Airflow DAG](#2026-07-13--phase-15-airflow-dag)
 - [2026-07-13 — Phase 1.6: Verification](#2026-07-13--phase-16-verification)
 - [2026-07-15 — Phase 2.1: Divvy GBFS Data Source Exploration](#2026-07-15--phase-21-divvy-gbfs-data-source-exploration)
+- [2026-07-15 — Phase 2.2: Kafka + Zookeeper Docker Services](#2026-07-15--phase-22-kafka--zookeeper-docker-services)
 
 ---
 
@@ -534,3 +535,39 @@ Explored and documented the Divvy GBFS (General Bikeshare Feed Specification) li
 
 ### No files created, no code written
 Phase 2.1 is data source exploration only. No Docker services, no producer, no Spark job yet. Those start in Phase 2.2.
+
+---
+
+## 2026-07-15 — Phase 2.2: Kafka + Zookeeper Docker Services
+
+### What was done
+Added Kafka and Zookeeper to `docker-compose.yml` as the streaming backbone for Phase 2. Brought up both services, created the `divvy_station_status` topic, verified end-to-end message produce/consume round-trip.
+
+### Files Modified
+- `docker-compose.yml` — added 2 new services (zookeeper, kafka) + 3 named volumes (kafka_data, zookeeper_data, zookeeper_log). Updated header comment. Added `KAFKA_BOOTSTRAP_SERVERS: kafka:9092` env var to both spark-master and spark-worker.
+
+### Services Added
+
+| Service | Image | Ports | Healthcheck |
+|---|---|---|---|
+| `zookeeper` | `confluentinc/cp-zookeeper:7.6.0` | 2181 (internal only) | `echo srvr \| nc localhost 2181` |
+| `kafka` | `confluentinc/cp-kafka:7.6.0` | 9092 (internal), 29092 (host) | `kafka-broker-api-versions --bootstrap-server localhost:9092` |
+
+### Key Configuration
+- **Confluent Platform 7.6.0** — free, stable, production-hardened (Bitnami no longer free)
+- **Zookeeper mode** (not KRaft) — more educational, traditional setup
+- **Two listeners:** `PLAINTEXT://kafka:9092` (Docker network) + `PLAINTEXT_HOST://localhost:29092` (host testing)
+- **Single-broker overrides:** replication factor 1 for offsets, transaction state log, and min ISR
+- **Auto-create topics enabled** — dev convenience; producer will create `divvy_station_status` on first message
+- **3 named volumes** — kafka_data, zookeeper_data, zookeeper_log (data survives restarts)
+- **Kafka depends on Zookeeper healthy** before starting
+
+### Verification
+- `docker compose config --quiet` — YAML syntax valid
+- `docker compose up -d zookeeper kafka` — both started, Zookeeper healthy in ~10s, Kafka healthy in ~40s
+- Created topic `divvy_station_status` (3 partitions, replication factor 1) — success
+- Produced test JSON message via console producer — success
+- Consumed test message back via console consumer — message received correctly
+- Produced second message via host listener (localhost:29092) — success, confirms host-side access works
+- Deleted test topic to start fresh for Phase 2.3 producer
+- Phase 1 services unaffected (were stopped, not running during this test)

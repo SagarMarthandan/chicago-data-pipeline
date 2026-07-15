@@ -25,6 +25,7 @@ A running log of changes, errors, and fixes throughout the project. Use this to 
 - [2026-07-13 — Phase 1.4: DBT Models](#2026-07-13--phase-14-dbt-models)
 - [2026-07-13 — Phase 1.5: Airflow DAG](#2026-07-13--phase-15-airflow-dag)
 - [2026-07-15 — Phase 2.1: Divvy GBFS data source exploration](#2026-07-15--phase-21-divvy-gbfs-data-source-exploration)
+- [2026-07-15 — Phase 2.2: Kafka + Zookeeper Docker services](#2026-07-15--phase-22-kafka--zookeeper-docker-services)
 
 ---
 
@@ -517,3 +518,29 @@ These are not technical errors — they are process mistakes made by the AI assi
 - **Always inspect the live data before coding** — the plan's DBT model assumed `station_id::bigint` and boolean fields. Live API inspection revealed both assumptions wrong. Five minutes of API exploration saved hours of debugging downstream.
 - **GBFS 1.1 uses integers for booleans** — `is_renting`, `is_returning`, `is_installed` are 0/1 integers, not JSON booleans. This is a GBFS spec quirk — the spec says "boolean" but the implementation uses integers. Always check actual API responses, not just spec docs.
 - **Optional fields are common in GBFS** — not all stations report all fields. Spark's schema inference or strict schema will fail. Use nullable fields and tolerate absence.
+
+---
+
+## 2026-07-15 — Phase 2.2: Kafka + Zookeeper Docker services
+
+### Changes
+- Added `zookeeper` and `kafka` services to `docker-compose.yml` (Confluent Platform 7.6.0)
+- Added `KAFKA_BOOTSTRAP_SERVERS: kafka:9092` env var to spark-master and spark-worker
+- Added 3 named volumes: `kafka_data`, `zookeeper_data`, `zookeeper_log`
+- Updated `docs/knowledge/kafka.md` with full setup details, commands, and concepts
+
+### Key Decisions
+
+| Decision | Choice | Why |
+|---|---|---|
+| Kafka image | `confluentinc/cp-kafka:7.6.0` | Bitnami images no longer free (commercial subscription since 2026). Confluent Platform is free, stable, production-hardened. Pinned version (not `latest`) for reproducibility. |
+| Zookeeper vs KRaft | Zookeeper | KRaft is newer (no ZK dependency), but learning Zookeeper first is more educational — most existing Kafka deployments still use it. |
+| Listeners | Two: internal (kafka:9092) + host (localhost:29092) | Internal for Spark/producer inside Docker network. Host listener for `kafka-console-consumer` testing from terminal. Without the host listener, you can't test from outside Docker. |
+| Partitions | 3 for `divvy_station_status` | Allows parallelism — Spark can read from 3 partitions concurrently. `station_id` as message key ensures same station goes to same partition (ordered processing per station). |
+| Auto-create topics | Enabled | Dev convenience — producer creates topic on first message. In production, you'd disable this and create topics explicitly to control partition count and replication. |
+| Single-broker overrides | Replication factor 1 for all internal topics | Defaults assume 3 brokers. Without these overrides, Kafka can't create `__consumer_offsets` and consumers can't commit offsets. |
+
+### Lessons
+- **Single-broker Kafka needs replication overrides** — `KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR`, `KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR`, and `KAFKA_TRANSACTION_STATE_LOG_MIN_ISR` all default to 3 (for production clusters). With a single broker, they must be set to 1 or Kafka silently fails to create internal topics.
+- **Two listeners for dev Kafka** — internal (`kafka:9092`) for Docker-network services, external (`localhost:29092`) for host-side testing. The `KAFKA_ADVERTISED_LISTENERS` config tells clients where to connect; without the host listener, you can't run `kafka-console-consumer` from your terminal.
+- **Healthcheck with `kafka-broker-api-versions`** — more reliable than TCP port check. Queries Kafka's API endpoint and confirms the broker is actually serving, not just listening on a port. Needs `start_period: 20s` — Kafka takes ~30-40s to fully start.
