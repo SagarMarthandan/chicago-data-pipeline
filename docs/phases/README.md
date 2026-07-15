@@ -47,4 +47,9 @@ chat-history/current-state.md       ← handoff for the NEXT session
 | File | Sub-Phase | Status |
 | `phase-1.1-docker.md` | Docker Compose services | Complete |
 | `phase-1.2-ingestion.md` | Socrata API ingestion script | Complete |
-| _next: `phase-1.3-spark-batch.md`_ | Spark batch job (Parquet → Postgres) | Not started |
+| `phase-1.3-spark-batch.md` | Spark batch job (Parquet → Postgres) | Complete |
+| `phase-1.4-dbt-models.md` | DBT staging + marts | Complete |
+| `phase-1.5-airflow-dag.md` | Airflow DAG + dbt Docker image | Complete |
+| `phase-1.6-verification.md` | Phase 1 end-to-end verification | Complete |
+| `phase-2.1-gbfs-data-source.md` | Divvy GBFS data source exploration | Complete |
+| _next: `phase-2.2-kafka.md`_ | Kafka + Zookeeper Docker services | Not started |

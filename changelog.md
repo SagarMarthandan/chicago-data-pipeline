@@ -24,6 +24,7 @@ A running log of changes, errors, and fixes throughout the project. Use this to 
 
 - [2026-07-13 — Phase 1.4: DBT Models](#2026-07-13--phase-14-dbt-models)
 - [2026-07-13 — Phase 1.5: Airflow DAG](#2026-07-13--phase-15-airflow-dag)
+- [2026-07-15 — Phase 2.1: Divvy GBFS data source exploration](#2026-07-15--phase-21-divvy-gbfs-data-source-exploration)
 
 ---
 
@@ -493,3 +494,26 @@ These are not technical errors — they are process mistakes made by the AI assi
 - **Never delete working state to "force" a refresh.** The serialized_dag entry was working — it just had stale content. Deleting it created a bigger problem than the one I was trying to solve.
 - **Never manually mutate managed internal tables.** Airflow (and other systems) have internal metadata tables with specific serialization formats. Manual inserts will be malformed.
 - **Repeated restarts without new information is thrashing.** If a restart didn't fix it, the next one won't either. Stop and gather new information (logs, config, docs) before acting again.
+
+
+---
+
+## 2026-07-15 — Phase 2.1: Divvy GBFS data source exploration
+
+### Changes
+- Explored live Divvy GBFS feeds (discovery, station_status, station_information, system_regions, system_information)
+- Documented full GBFS schema in `docs/knowledge/data-sources.md`
+
+### Key Findings (design-changing)
+
+| # | Finding | Impact on Plan | Fix |
+|---|---|---|---|
+| 1 | `station_id` is mixed format: 667 UUIDs + 1,349 numeric strings | Plan's DBT model had `station_id::bigint` — will fail on UUID IDs | Keep `station_id` as string throughout the pipeline |
+| 2 | `is_renting`/`is_returning`/`is_installed` are integers 0/1, not booleans | Plan assumed booleans; Spark/DBT needs explicit cast | `CAST(col AS BOOLEAN)` in Spark (0→false, 1→true) |
+| 3 | `num_scooters_available`/`num_scooters_unavailable` are optional (not in all stations) | Spark schema with strict mode will fail on missing fields | Use nullable schema fields, don't fail on absence |
+| 4 | One station had `last_reported: 86400` (Jan 2, 1970 — dead station) | Stale data pollutes fact table | Filter `last_reported` to recent threshold |
+
+### Lessons
+- **Always inspect the live data before coding** — the plan's DBT model assumed `station_id::bigint` and boolean fields. Live API inspection revealed both assumptions wrong. Five minutes of API exploration saved hours of debugging downstream.
+- **GBFS 1.1 uses integers for booleans** — `is_renting`, `is_returning`, `is_installed` are 0/1 integers, not JSON booleans. This is a GBFS spec quirk — the spec says "boolean" but the implementation uses integers. Always check actual API responses, not just spec docs.
+- **Optional fields are common in GBFS** — not all stations report all fields. Spark's schema inference or strict schema will fail. Use nullable fields and tolerate absence.

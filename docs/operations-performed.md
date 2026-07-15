@@ -17,6 +17,8 @@ A chronological log of operations, files created, and structural changes made to
 - [2026-07-13 — Phase 1.3: Spark Batch Job](#2026-07-13--phase-13-spark-batch-job)
 - [2026-07-13 — Phase 1.4: DBT Models](#2026-07-13--phase-14-dbt-models)
 - [2026-07-13 — Phase 1.5: Airflow DAG](#2026-07-13--phase-15-airflow-dag)
+- [2026-07-13 — Phase 1.6: Verification](#2026-07-13--phase-16-verification)
+- [2026-07-15 — Phase 2.1: Divvy GBFS Data Source Exploration](#2026-07-15--phase-21-divvy-gbfs-data-source-exploration)
 
 ---
 
@@ -509,3 +511,26 @@ Formal end-to-end verification of Phase 1 batch pipeline. Cold-started all servi
 - Marts queryable: dim_date=365, dim_community_area=77, dim_crime_type=323, fact_crime_events=263,394
 - fact_crime_events matches raw.crime_events (263,394) — no data loss
 - **Phase 1 gate: PASSED. Phase 2 unlocked.**
+
+---
+
+## 2026-07-15 — Phase 2.1: Divvy GBFS Data Source Exploration
+
+### What was done
+Explored and documented the Divvy GBFS (General Bikeshare Feed Specification) live API — the streaming data source for Phase 2. Fetched all relevant feeds, analyzed schema, identified quirks that affect pipeline design.
+
+### Files Modified
+- `docs/knowledge/data-sources.md` — expanded Divvy GBFS section from 7-line summary to full schema documentation: discovery endpoint, 12 available feeds, station_status fields (12 mandatory + 2 optional), station_information fields, pipeline implications
+
+### Key Findings
+- **2,016 stations** in both station_status and station_information (perfect 1:1 match)
+- **station_id is mixed format**: 667 UUIDs + 1,349 numeric strings → must stay as string (plan's DBT model had `station_id::bigint` which will fail)
+- **is_renting/is_returning/is_installed are integers 0/1**, NOT booleans → need explicit cast
+- **Optional fields** (num_scooters_available, num_scooters_unavailable) not in all stations → Spark schema must tolerate absence
+- **One dead station** with last_reported=86400 (Jan 2, 1970) → filter stale stations
+- **system_regions** has only 1 entry (Evanston) → not useful for community area mapping
+- **No community area in GBFS** → will need spatial join of station lat/lon to community area boundaries later
+- GBFS version 1.1, TTL 60s, timezone America/Chicago, no auth required
+
+### No files created, no code written
+Phase 2.1 is data source exploration only. No Docker services, no producer, no Spark job yet. Those start in Phase 2.2.

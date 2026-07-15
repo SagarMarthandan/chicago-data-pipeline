@@ -46,11 +46,103 @@
 | `year` | int | partition column |
 
 ### Divvy Bike Share (GBFS API)
-- **Feed:** https://gbfs.divvybikes.com/gbfs/gbfs.json
-- **Station status:** https://gbfs.divvybikes.com/gbfs/en/station_status.json
-- **Station info:** https://gbfs.divvybikes.com/gbfs/en/station_information.json
-- **Format:** JSON (GBFS — General Bikeshare Feed Specification)
-- **Refresh:** ~60 seconds (genuine live stream)
-- **No auth required**
 
+- **Discovery endpoint:** `https://gbfs.divvybikes.com/gbfs/gbfs.json`
+- **GBFS version:** 1.1
+- **Operator:** Lyft (actual feed URLs resolve to `gbfs.lyft.com`)
+- **Timezone:** America/Chicago
+- **TTL:** 60 seconds (cache refresh interval)
+- **No auth required**
+- **Languages:** en, fr, es (we use `en`)
+
+**Available feeds (12 total):**
+
+| Feed | URL | Use in pipeline |
+|---|---|---|
+| `station_status` | `.../en/station_status.json` | **Streaming source** — polled every 60s by Kafka producer |
+| `station_information` | `.../en/station_information.json` | **Dimension table** — relatively static (station name, lat, lon, capacity) |
+| `system_information` | `.../en/system_information.json` | System metadata (system_id, name, timezone) — not piped |
+| `system_regions` | `.../en/system_regions.json` | Only 1 region (Evanston) — not useful for community area mapping |
+| `free_bike_status` | `.../en/free_bike_status.json` | GPS of free-floating bikes — not used in Phase 2 |
+| `system_alerts` | `.../en/system_alerts.json` | Service alerts — not used in Phase 2 |
+| `gbfs_versions` | `.../en/gbfs_versions.json` | Version history — not used |
+| `ebikes_at_stations` | `.../en/ebikes_at_stations.json` | E-bike details — not used |
+| `system_hours` / `system_calendar` / `system_pricing_plans` | various | Operational metadata — not used |
+
+#### station_status (streaming source)
+
+- **2,016 stations** per poll (verified 2026-07-15)
+- **Structure:** `{"data": {"stations": [...]}, "last_updated": <epoch>, "ttl": 60}`
+- **Refresh:** ~60 seconds
+
+**Fields in ALL stations:**
+
+| Field | Type | Notes |
+|---|---|---|
+| `station_id` | string | **Mixed format**: 667 UUIDs (e.g. `a3af8123-...`), 1,349 numeric strings (e.g. `2232759736070696510`). Must stay as string — cannot cast to bigint |
+| `num_bikes_available` | int | Never null in observed data |
+| `num_bikes_disabled` | int | |
+| `num_docks_available` | int | |
+| `num_docks_disabled` | int | |
+| `is_installed` | int (0/1) | **Not boolean** — integer 0 or 1. Cast to boolean in Spark/DBT |
+| `is_renting` | int (0/1) | **Not boolean** — same as above |
+| `is_returning` | int (0/1) | **Not boolean** — same as above |
+| `last_reported` | int (epoch seconds) | Unix timestamp. One station had `86400` (Jan 2 1970 — dead station). Filter stale stations |
+| `legacy_id` | string | Old Divvy station ID (e.g. `"474"`) |
+| `num_ebikes_available` | int | |
+| `eightd_has_available_keys` | boolean | Actual boolean (unlike is_* fields) |
+
+**Optional fields (not in all stations):**
+
+| Field | Type | Notes |
+|---|---|---|
+| `num_scooters_available` | int | Present in some stations only — Spark schema must tolerate absence |
+| `num_scooters_unavailable` | int | Same — optional |
+
+**Key quirks:**
+- `is_renting`/`is_returning`/`is_installed` are **integers 0/1**, NOT booleans — the plan's DBT model assumed boolean; need explicit cast
+- `station_id` is a **string** — the plan's DBT model had `station_id::bigint` which will fail on UUID-format IDs
+- One station (`2232759736070696510`) had `last_reported: 86400` (epoch for Jan 2, 1970) — likely a decommissioned station. Consider filtering `last_reported > <some recent threshold>`
+- All 2,016 station_ids in station_status have matching entries in station_information (perfect 1:1)
+
+#### station_information (dimension source)
+
+- **2,016 stations** (matches station_status exactly)
+- **Structure:** `{"data": {"stations": [...]}, "last_updated": <epoch>, "ttl": 60}`
+- **Cadence:** Relatively static — changes only when stations are added/removed/relocated
+
+**Fields in ALL stations:**
+
+| Field | Type | Notes |
+|---|---|---|
+| `station_id` | string | Same IDs as station_status |
+| `name` | string | Human-readable (e.g. "Damen Ave & Ogden Ave") |
+| `lat` | float | Station latitude |
+| `lon` | float | Station longitude |
+| `capacity` | int | Total dock capacity |
+| `station_type` | string | `classic` or `lightweight` |
+| `has_kiosk` | boolean | Whether station has a kiosk |
+| `external_id` | string | Same as station_id in most cases |
+| `electric_bike_surcharge_waiver` | boolean | |
+| `eightd_has_key_dispenser` | boolean | |
+| `eightd_station_services` | array | Usually empty |
+| `rental_uris` | object | Nested: `{"android": "...", "ios": "..."}` |
+
+**Optional fields (not in all stations):**
+
+| Field | Type | Notes |
+|---|---|---|
+| `short_name` | string | e.g. "CHI02349" — not present in all stations |
+| `rental_methods` | array | e.g. `["KEY", "CREDITCARD", "TRANSITCARD"]` — not in all |
+
+**Note:** `short_name` and `rental_methods` appear in most but not all stations. Spark schema must tolerate absence.
+
+#### Pipeline implications (Phase 2)
+
+- **station_status** → Kafka topic `divvy_station_status` → Spark Structured Streaming → `raw.station_status` (append-only, one row per station per poll)
+- **station_information** → DBT seed or one-time Spark load → `mart.dim_station` (dimension table, refreshed periodically)
+- **station_id must be string** throughout the pipeline (UUID + numeric mix)
+- **is_renting/is_returning/is_installed** need `CAST(col AS BOOLEAN)` in Spark (0→false, 1→true)
+- **Optional scooter fields** — use nullable schema in Spark, don't fail on missing
+- **No community area in GBFS** — to answer "crime near Divvy station", we'll need to spatially join station lat/lon to community area boundaries (Phase 2.5 or later)
 ---
