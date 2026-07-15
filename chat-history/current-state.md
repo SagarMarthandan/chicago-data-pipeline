@@ -141,6 +141,7 @@ All Phase 1 sub-phases verified end-to-end. Cold start → DAG run → 4 tasks s
 |---|---|---|
 | 2.5 DBT models for stream | **NEXT** | `stg_station_status` (staging view) + `fact_station_reads` (one row per station poll) |
 | 2.6 Airflow DAG for stream | Not started | `divvy_stream_dag.py` — starts/monitors producer + streaming job |
+
 ## Files Created (full repo structure)
 
 ```
@@ -150,12 +151,7 @@ All Phase 1 sub-phases verified end-to-end. Cold start → DAG run → 4 tasks s
 ├── .vscode/settings.json
 ├── AGENTS.md
 ├── README.md
-├── docker-compose.yml        ← 10 services (Phase 1 + Phase 2), YAML anchors
-├── chicago-pipeline-plan.md
-├── init.sql
-├── pyproject.toml            ← now includes kafka-python
-├── uv.lock
-├── docker-compose.yml        ← 10 services + spark_checkpoints volume (Phase 1 + Phase 2)
+├── docker-compose.yml        ← 10 services + spark_checkpoints volume (Phase 1 + Phase 2), YAML anchors
 ├── airflow/
 │   ├── Dockerfile
 │   ├── passwords.json
@@ -189,8 +185,8 @@ All Phase 1 sub-phases verified end-to-end. Cold start → DAG run → 4 tasks s
     ├── knowledge/
     │   ├── index.md
     │   ├── wsl.md, uv.md, docker-compose.md, postgres.md, dbt.md, spark.md
-    │   ├── architecture.md   ← 9 sections (now includes Kafka + Zookeeper)
-    │   ├── kafka.md          ← REWRITTEN: full concepts + 8 mermaid diagrams
+    │   ├── architecture.md   ← 10 sections (now includes Kafka + Zookeeper + Spark Streaming)
+    │   ├── kafka.md          ← full concepts + 8 mermaid diagrams + Spark consumer + checkpointing
     │   ├── airflow.md
     │   ├── git.md
     │   ├── data-sources.md   ← expanded with full GBFS schema (Phase 2.1)
