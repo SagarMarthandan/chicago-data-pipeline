@@ -604,3 +604,34 @@ Created the Kafka producer script that polls the Divvy GBFS `station_status.json
 - Continuous mode (5s interval): 2 polls in 10s, graceful shutdown on SIGTERM
 - Total after all tests: 6,048 messages (3 polls × 2,016 stations)
 - Topic deleted for clean Phase 2.4 start
+
+## 2026-07-15 — Phase 2.4: Spark Structured Streaming
+
+### What was done
+Built the Spark Structured Streaming consumer that reads station status messages from Kafka topic `divvy_station_status`, parses JSON payloads, casts types (int→boolean for is_* fields, epoch→timestamp for last_reported), filters stale stations (last_reported > 1 hour ago), and writes each micro-batch to Postgres `raw.station_status` via foreachBatch + JDBC. Verified end-to-end: producer → Kafka → Spark streaming → Postgres with row count growing continuously.
+
+### Files Created
+- `spark/jobs/divvy_stream.py` — Structured Streaming consumer. `readStream.format("kafka")` → `from_json()` with typed schema → cast/filter → `foreachBatch` JDBC write to `raw.station_status`. Supports `--once` (single batch test), `--bootstrap` (custom Kafka address). 60s trigger matches producer poll interval. Checkpoint location at `/opt/spark/checkpoints/divvy_stream` for fault recovery.
+
+### Files Modified
+- `spark/Dockerfile` — added 4 Kafka connector JARs (spark-sql-kafka-0-10_2.12-3.5.1, spark-token-provider-kafka-0-10_2.12-3.5.1, kafka-clients-3.5.1, commons-pool2-2.11.1) + checkpoint directory creation with spark user ownership
+- `docker-compose.yml` — added `spark_checkpoints` named volume + mounted to spark-master at `/opt/spark/checkpoints`
+- Postgres `raw.station_status` table created (18 columns: 14 station data fields + 3 Kafka metadata + 1 ingest timestamp)
+
+### Key Design Decisions
+- **4 Kafka JARs baked into image** — apache/spark:3.5.1 ships only core JARs; Kafka connector needs 4 additional JARs. Same pattern as PostgreSQL JDBC driver.
+- **foreachBatch bridges streaming→JDBC** — JDBC has no native streaming sink; foreachBatch gives each micro-batch as a static DataFrame for standard JDBC writer
+- **Checkpoint via named volume** — `spark_checkpoints` volume persists Kafka offsets across container restarts; without it, restart re-reads all messages from earliest
+- **Stale station filter at 1 hour** — 888/2016 stations (44%) had stale `last_reported`; filtering in Spark (not DBT) keeps warehouse clean
+- **station_id as StringType** — mixed format (UUIDs + numeric strings); casting to bigint would fail
+- **is_* fields cast int→boolean** — GBFS returns 0/1 integers, not booleans; `CAST(col AS BOOLEAN)` in Spark
+- **Optional scooter fields nullable** — not all stations have scooters; `from_json` returns null for missing fields
+- **Kafka metadata columns** — partition, offset, timestamp stored for traceability
+
+### Verification
+- `--once` mode: 2,016 Kafka messages → 1,128 rows inserted (888 stale stations filtered)
+- Boolean casts verified: is_renting/is_returning/is_installed show true/false correctly
+- Optional scooter fields: 1,099/1,128 non-null (tolerated absence correctly)
+- Continuous mode (both producer + streaming): 5 micro-batches in 5 minutes, ~1,128 rows per batch, 5,640 total rows
+- Row count grew from 1,128 → 5,640 over 150s, confirming continuous pipeline operation
+- Multiple ingest timestamps visible (one per minute per micro-batch)

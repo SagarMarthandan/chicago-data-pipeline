@@ -1,6 +1,6 @@
 # Current State — Handoff Document
 
-> **Read this first in a new session.** This file is the handoff: current state, active decisions, and next steps. Last updated: 2026-07-15 (end of session — Phase 2.1–2.3 complete, Phase 2.4 next).
+> **Read this first in a new session.** This file is the handoff: current state, active decisions, and next steps. Last updated: 2026-07-15 (end of session — Phase 2.1–2.4 complete, Phase 2.5 next).
 
 ---
 
@@ -10,7 +10,7 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 
 - **Repo:** `~/chicago-data-pipeline/` (WSL, Ubuntu on Windows 10)
 - **Git:** initialized on `main`, no commits yet (user commits manually)
-- **Phase:** 1 COMPLETE. Phase 2 IN PROGRESS (2.1 GBFS exploration ✅, 2.2 Kafka+Zookeeper ✅, 2.3 Producer ✅, 2.4 Spark Streaming NEXT). Phase 3, 4 locked.
+- **Phase:** 1 COMPLETE. Phase 2 IN PROGRESS (2.1 GBFS exploration ✅, 2.2 Kafka+Zookeeper ✅, 2.3 Producer ✅, 2.4 Spark Streaming ✅, 2.5 DBT Stream Models NEXT). Phase 3, 4 locked.
 - **AI mode:** AI-writes-code (user said "you write it" — explicit mode switch from Socratic)
 
 ## Tech Stack
@@ -32,8 +32,8 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 | Service | Image | Status |
 |---|---|---|
 | postgres | `postgres:16-alpine` | **healthy** — 3 schemas (raw, staging, mart) |
-| spark-master | `apache/spark:3.5.1` + JDBC | **healthy** — UI on port 8180, now has `KAFKA_BOOTSTRAP_SERVERS` env |
-| spark-worker | same as master | **running** — UI on port 8081, now has `KAFKA_BOOTSTRAP_SERVERS` env |
+| spark-master | `apache/spark:3.5.1` + JDBC + Kafka connector | **healthy** — UI on port 8180, has `KAFKA_BOOTSTRAP_SERVERS` env + checkpoint volume |
+| spark-worker | same as master | **running** — UI on port 8081, has `KAFKA_BOOTSTRAP_SERVERS` env |
 | airflow-init | `apache/airflow:3.0.0-python3.11` | **exited (0)** — migrations complete |
 | airflow-webserver | same | **healthy** — UI on port 8080 (admin/admin) |
 | airflow-scheduler | same | **running** — heartbeat active |
@@ -42,7 +42,7 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 | kafka | `confluentinc/cp-kafka:7.6.0` | **healthy** — ports 9092 (internal) + 29092 (host) |
 | dbt-build | `python:3.11-slim` + dbt | build-only (never runs, exists for `docker compose build`) |
 
-**Note:** At end of session, only zookeeper + kafka are running (Phase 1 services were stopped). Start all with `docker compose up -d`.
+**Note:** At end of session, postgres + spark-master + spark-worker + zookeeper + kafka are running. `raw.station_status` has 5,640 rows from Phase 2.4 verification. Start all services with `docker compose up -d`.
 
 ### URLs
 - **Airflow UI:** http://localhost:8080 (admin / admin)
@@ -69,6 +69,12 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 - **3 partitions for `divvy_station_status`** — station_id as key → same station → same partition
 - **Single-broker overrides:** replication factor 1 for all internal topics
 - **Explicit topic creation** (not auto-create) for custom partition counts — `KAFKA_NUM_PARTITIONS` env var doesn't work with Confluent images
+- **4 Kafka connector JARs baked into Spark image** (spark-sql-kafka, spark-token-provider, kafka-clients, commons-pool2)
+- **foreachBatch bridges streaming→JDBC** — JDBC has no native streaming sink; foreachBatch gives each micro-batch as a static DataFrame
+- **Checkpoint via named volume** `spark_checkpoints` — persists Kafka offsets across container restarts
+- **Stale station filter at 1 hour** — 888/2016 stations (44%) had stale `last_reported`; filtered in Spark, not DBT
+- **is_* fields cast int→boolean in Spark** — GBFS returns 0/1 integers, not booleans
+- **Kafka metadata columns** (partition, offset, timestamp) stored in `raw.station_status` for traceability
 
 ## Phase 1 — COMPLETE (1.1–1.6)
 
@@ -112,29 +118,29 @@ All Phase 1 sub-phases verified end-to-end. Cold start → DAG run → 4 tasks s
 - **2 errors hit:**
   1. `NoBrokersAvailable` removed in kafka-python 3.0.x → catch `KafkaError` instead
   2. Auto-created topic had 1 partition → `KAFKA_NUM_PARTITIONS` env var doesn't work with Confluent image → explicit `kafka-topics --create --partitions 3`
-- Topic `divvy_station_status` was deleted at end of testing — needs to be recreated before Phase 2.4
+- Topic `divvy_station_status` was recreated at start of Phase 2.4 (3 partitions, replication factor 1)
+
+### Phase 2.4 — Spark Structured Streaming (COMPLETE)
+- `spark/jobs/divvy_stream.py` — Structured Streaming consumer: `readStream.format("kafka")` → `from_json()` → cast types → filter stale → `foreachBatch` → Postgres `raw.station_status`
+  - 4 Kafka connector JARs baked into Spark Dockerfile (spark-sql-kafka, spark-token-provider, kafka-clients, commons-pool2)
+  - `spark_checkpoints` named volume for checkpoint persistence (Kafka offsets)
+  - 60s trigger matches producer poll interval; `--once` mode for testing
+  - Stale station filter: `last_reported > now() - 1 hour` (drops 888/2016 = 44% stale stations)
+  - is_* fields cast int→boolean; station_id stays string; optional scooter fields nullable
+  - Kafka metadata columns (partition, offset, timestamp) stored for traceability
+- `raw.station_status` table created in Postgres (18 columns)
+- Verified: `--once` mode → 1,128 rows; continuous mode → 5,640 rows over 5 micro-batches (1,128/batch)
+- **2 errors hit:**
+  1. Checkpoint mkdir failed — named volume mounted as root, Spark runs as `spark` user → `chown` + Dockerfile fix
+  2. AQE warning for streaming — not an error, Spark silently disables AQE for streaming queries
+
 
 ### Phase 2 Remaining Sub-phases
 
 | Sub-phase | Status | What to build |
 |---|---|---|
-| 2.4 Spark Structured Streaming | **NEXT** | `spark/jobs/divvy_stream.py` — `readStream` from Kafka → parse JSON → `foreachBatch` writes to `raw.station_status` in Postgres |
-| 2.5 DBT models for stream | Not started | `stg_station_status` (staging view) + `fact_station_reads` (one row per station poll) |
+| 2.5 DBT models for stream | **NEXT** | `stg_station_status` (staging view) + `fact_station_reads` (one row per station poll) |
 | 2.6 Airflow DAG for stream | Not started | `divvy_stream_dag.py` — starts/monitors producer + streaming job |
-
-### Phase 2.4 — What's Needed Next
-- **Before starting:** Recreate Kafka topic: `docker compose exec kafka kafka-topics --create --topic divvy_station_status --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092`
-- **Spark streaming job** (`spark/jobs/divvy_stream.py`):
-  - `readStream.format("kafka")` → subscribe to `divvy_station_status`
-  - `from_json()` to parse the JSON value using a schema (must handle: station_id as string, is_* as int→boolean cast, optional scooter fields as nullable)
-  - `foreachBatch` to write to Postgres `raw.station_status` via JDBC (no native streaming JDBC sink)
-  - Checkpoint location for fault tolerance
-  - 60s trigger (matches producer poll interval)
-- **Key lessons from plan:** `foreachBatch` is the bridge between Structured Streaming and JDBC. Learn why.
-- **Spark needs Kafka connector JAR** — check if `apache/spark:3.5.1` includes it or if we need to add it to the Spark Dockerfile
-- **Run command:** `docker compose exec spark-master /opt/spark/bin/spark-submit --master local[*] /opt/spark/jobs/divvy_stream.py`
-- **Verification:** `SELECT COUNT(*) FROM raw.station_status` grows over time
-
 ## Files Created (full repo structure)
 
 ```
@@ -149,6 +155,7 @@ All Phase 1 sub-phases verified end-to-end. Cold start → DAG run → 4 tasks s
 ├── init.sql
 ├── pyproject.toml            ← now includes kafka-python
 ├── uv.lock
+├── docker-compose.yml        ← 10 services + spark_checkpoints volume (Phase 1 + Phase 2)
 ├── airflow/
 │   ├── Dockerfile
 │   ├── passwords.json
@@ -157,9 +164,10 @@ All Phase 1 sub-phases verified end-to-end. Cold start → DAG run → 4 tasks s
 │   │   └── crime_batch_dag.py
 │   └── dbt_profiles/profiles.yml
 ├── spark/
-│   ├── Dockerfile            ← apache/spark:3.5.1 + PostgreSQL JDBC
+│   ├── Dockerfile            ← apache/spark:3.5.1 + PostgreSQL JDBC + Kafka connector (4 JARs)
 │   └── jobs/
-│       └── crime_batch.py
+│       ├── crime_batch.py
+│       └── divvy_stream.py   ← NEW (Phase 2.4) — Structured Streaming consumer
 ├── ingestion/
 │   └── download_crime.py
 ├── kafka/                    ← NEW (Phase 2.3)
@@ -188,31 +196,30 @@ All Phase 1 sub-phases verified end-to-end. Cold start → DAG run → 4 tasks s
     │   ├── data-sources.md   ← expanded with full GBFS schema (Phase 2.1)
     │   └── mermaid-syntax.md
     ├── learning-protocol.md
-    ├── operations-performed.md ← TOC + entries through Phase 2.3
+    ├── operations-performed.md ← TOC + entries through Phase 2.4
     ├── phases/
-    │   ├── README.md         ← index updated through Phase 2.3
+    │   ├── README.md         ← index updated through Phase 2.4
     │   ├── phase-1.1-docker.md through phase-1.6-verification.md
     │   ├── phase-2.1-gbfs-data-source.md
     │   ├── phase-2.2-kafka.md
-    │   └── phase-2.3-divvy-producer.md
+    │   ├── phase-2.3-divvy-producer.md
+    │   └── phase-2.4-spark-streaming.md  ← NEW (Phase 2.4)
     └── conventions/
         ├── airflow.md, dbt.md, docker.md, spark.md
 ```
 
 ## Next Steps
 
-1. **Phase 2.4: Spark Structured Streaming** — `spark/jobs/divvy_stream.py`
-   - Recreate Kafka topic first (deleted at end of Phase 2.3 testing)
-   - Check if Spark image needs Kafka connector JAR
-   - Build streaming job: Kafka → parse JSON → `foreachBatch` → Postgres `raw.station_status`
-   - Verification: row count in `raw.station_status` grows over time
-2. **Phase 2.5: DBT models** — `stg_station_status` + `fact_station_reads`
-3. **Phase 2.6: Airflow DAG** — `divvy_stream_dag.py` (start/monitor producer + streaming)
-4. **Phase 2 gate:** Done when `docker compose up` includes Kafka, producer running, Spark streaming writes to Postgres, DBT builds `fact_station_reads`, can query "avg bikes available at station X over last hour"
+1. **Phase 2.5: DBT models for stream** — `stg_station_status` + `fact_station_reads`
+   - `stg_station_status`: staging view on `raw.station_status` — light cleaning, renaming, type casting
+   - `fact_station_reads`: one row per station poll — analytics-ready fact table
+   - Will enable querying "avg bikes available at station X over last hour"
+   - Requires: `raw.station_status` table (Phase 2.4 provides this, 5,640 rows currently)
+2. **Phase 2.6: Airflow DAG** — `divvy_stream_dag.py` (start/monitor producer + streaming)
+3. **Phase 2 gate:** Done when `docker compose up` includes Kafka, producer running, Spark streaming writes to Postgres, DBT builds `fact_station_reads`, can query "avg bikes available at station X over last hour"
 
 ## Active Constraints
-
-- **Phase gates:** Phase 1 COMPLETE. Phase 2 in progress (2.1–2.3 done, 2.4 next). Phase 3 locked until Phase 2 works. Do NOT skip ahead.
+- **Phase gates:** Phase 1 COMPLETE. Phase 2 in progress (2.1–2.4 done, 2.5 next). Phase 3 locked until Phase 2 works. Do NOT skip ahead.
 - **Learning protocol:** Socratic by default. User must say "write the code" to get code. Currently in AI-writes-code mode.
 - **Three-doc system:** `changelog.md` (errors), `docs/knowledge/` (reference, one file per topic), `docs/operations-performed.md` (audit trail). Update all three after every change.
 - **Phase-completion docs:** After each sub-phase is verified, create `docs/phases/phase-X.Y-<name>.md` from `TEMPLATE.md`. Include one high-level mermaid diagram + pointer to `docs/knowledge/architecture.md` for details.
@@ -233,12 +240,12 @@ All Phase 1 sub-phases verified end-to-end. Cold start → DAG run → 4 tasks s
 
 ## Open Questions / Risks
 
-- **Spark Kafka connector:** `apache/spark:3.5.1` may not include the Kafka connector JAR (`spark-sql-kafka-0-10_2.12`). Need to check and potentially add to `spark/Dockerfile` (like we did for PostgreSQL JDBC).
-- **`station_id` must be string:** The plan's DBT model had `station_id::bigint` — will fail on UUID-format IDs. Must use string throughout.
-- **`is_renting`/`is_returning`/`is_installed` are integers 0/1:** Need `CAST(col AS BOOLEAN)` in Spark/DBT.
-- **Optional scooter fields:** `num_scooters_available`/`num_scooters_unavailable` not in all stations. Spark schema must use nullable fields.
-- **Dead station filtering:** One station had `last_reported: 86400` (1970). Filter in Spark or DBT.
-- **Kafka topic deleted:** `divvy_station_status` was deleted at end of Phase 2.3 testing. Must recreate before Phase 2.4: `docker compose exec kafka kafka-topics --create --topic divvy_station_status --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092`
+- **Spark Kafka connector:** RESOLVED — `apache/spark:3.5.1` does NOT include Kafka connector. Added 4 JARs to `spark/Dockerfile` (spark-sql-kafka, spark-token-provider, kafka-clients, commons-pool2).
+- **`station_id` must be string:** RESOLVED — StringType throughout Spark + Postgres. Works for both UUID and numeric IDs.
+- **`is_renting`/`is_returning`/`is_installed` are integers 0/1:** RESOLVED — `CAST(col AS BOOLEAN)` in Spark. Postgres receives proper boolean.
+- **Optional scooter fields:** RESOLVED — nullable in Spark schema. `from_json` returns null for missing fields. 1099/1128 non-null.
+- **Dead station filtering:** RESOLVED — filter `last_reported > now() - 1 hour` in Spark. Drops 888/2016 (44%) stale stations.
+- **Kafka topic:** RESOLVED — `divvy_station_status` recreated at start of Phase 2.4 (3 partitions, replication factor 1).
 - **Airflow 3.0 DockerOperator:** Not used in Phase 1 — BashOperator with `docker exec`/`docker run` was simpler. May revisit in Phase 2.6.
 - **Bitnami images no longer free** — resolved for Spark (`apache/spark:3.5.1`) and Kafka (`confluentinc/cp-kafka:7.6.0`).
 - **`docker compose down` (without `-v`) preserves data** — named volumes persist. Use `-v` only to wipe everything. Kafka data volume (`kafka_data`) also persists.
@@ -269,5 +276,6 @@ All Phase 1 sub-phases verified end-to-end. Cold start → DAG run → 4 tasks s
 | `2026-07-15/01-phase-2.1-gbfs-data-source.md` | GBFS API exploration, schema analysis, 4 design-changing findings |
 | `2026-07-15/02-phase-2.2-kafka.md` | Kafka + Zookeeper Docker services, Confluent images, single-broker overrides |
 | `2026-07-15/03-phase-2.3-producer-and-docs.md` | Divvy producer implementation, kafka.md conceptual rewrite with mermaid diagrams |
+| `2026-07-15/04-phase-2.4-spark-streaming.md` | Spark Structured Streaming: Kafka connector JARs, divvy_stream.py, foreachBatch→JDBC, checkpoint volume |
 
 

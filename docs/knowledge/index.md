@@ -9,11 +9,11 @@ Reference material, useful commands, and explanations accumulated throughout the
 | [wsl.md](wsl.md) | WSL | Useful commands, why WSL filesystem is faster, Devin IDE sync |
 | [uv.md](uv.md) | uv (Python Package Manager) | What is uv, uv sync vs pip install, uv in Docker, common commands |
 | [docker-compose.md](docker-compose.md) | Docker Compose | Project names, env vars, depends_on, volumes, healthchecks, YAML anchors |
-| [architecture.md](architecture.md) | How Everything Connects | 9 mermaid diagrams: uv→Docker, Spark→Docker, Airflow→Docker, init.sql, .env, docker.sock, startup order, file→container map, Kafka+Zookeeper |
+| [architecture.md](architecture.md) | How Everything Connects | 10 mermaid diagrams: uv→Docker, Spark→Docker (JDBC + Kafka JARs), Airflow→Docker, init.sql, .env, docker.sock, startup order, file→container map, Kafka+Zookeeper, Spark Streaming→Kafka→Postgres |
 | [postgres.md](postgres.md) | Postgres | Useful commands, schemas, init.sql, two databases pattern |
 | [dbt.md](dbt.md) | DBT | Key Jinja variables, common commands, model naming |
-| [spark.md](spark.md) | Spark | apache/spark image, spark-class commands, healthcheck, useful commands |
-| [kafka.md](kafka.md) | Kafka | What is Kafka, core concepts (cluster, topic, partition, offset, producer, consumer, broker, Zookeeper) with mermaid diagrams, our setup, single-broker overrides, useful commands |
+| [spark.md](spark.md) | Spark | apache/spark image, spark-class commands, healthcheck, Kafka connector JARs, Structured Streaming + Kafka, foreachBatch→JDBC, checkpointing, useful commands |
+| [kafka.md](kafka.md) | Kafka | What is Kafka, core concepts (cluster, topic, partition, offset, producer, consumer, broker, Zookeeper) with mermaid diagrams, Spark Structured Streaming consumer, checkpointing, our setup, single-broker overrides, useful commands |
 | [airflow.md](airflow.md) | Airflow | Airflow 2.x vs 3.x comprehensive comparison (9 subsections), commands, SimpleAuthManager |
 | [git.md](git.md) | Git | Useful commands |
 | [data-sources.md](data-sources.md) | Data Sources | Chicago Crime Socrata API reference, Divvy GBFS API reference |

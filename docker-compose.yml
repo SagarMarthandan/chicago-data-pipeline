@@ -200,6 +200,10 @@ services:
       - ./spark/jobs:/opt/spark/jobs
       # Data directory — Parquet files from ingestion are read by Spark
       - ./data:/opt/spark/data
+      # Checkpoint directory — stores Kafka offsets for Structured Streaming
+      # fault recovery (Phase 2.4). Named volume so checkpoints survive
+      # container restarts — without it, a restart re-reads all Kafka messages.
+      - spark_checkpoints:/opt/spark/checkpoints
     healthcheck:
       # Check if Spark master Web UI is responding on port 8080.
       # We check the Web UI (not the RPC port 7077) because Spark master
@@ -421,3 +425,4 @@ volumes:
   kafka_data:
   zookeeper_data:
   zookeeper_log:
+  spark_checkpoints:

@@ -27,6 +27,7 @@ A running log of changes, errors, and fixes throughout the project. Use this to 
 - [2026-07-15 — Phase 2.1: Divvy GBFS data source exploration](#2026-07-15--phase-21-divvy-gbfs-data-source-exploration)
 - [2026-07-15 — Phase 2.2: Kafka + Zookeeper Docker services](#2026-07-15--phase-22-kafka--zookeeper-docker-services)
 - [2026-07-15 — Phase 2.3: Kafka producer](#2026-07-15--phase-23-kafka-producer)
+- [2026-07-15 — Phase 2.4: Spark Structured Streaming](#2026-07-15--phase-24-spark-structured-streaming)
 
 ---
 
@@ -576,3 +577,42 @@ These are not technical errors — they are process mistakes made by the AI assi
 - **Auto-create uses broker defaults, not your desired config** — `KAFKA_NUM_PARTITIONS` env var didn't work with the Confluent image (`server.properties` showed `num.partitions=1`). For custom partition counts, create topics explicitly with `kafka-topics --create --partitions N`. Auto-create is a convenience, not a configuration mechanism.
 - **kafka-python 3.0.x removed `NoBrokersAvailable`** — the exception hierarchy changed. Use `KafkaError` (base class) for catch-all error handling. Always check the installed version's API, not just documentation from older versions.
 - **Key-based partitioning distributes evenly** — with 3 partitions and station_id as key, messages split 720/661/635 (not exactly equal, but close). The hash of station_id determines the partition — same station always goes to the same partition.
+
+---
+
+## 2026-07-15 — Phase 2.4: Spark Structured Streaming
+
+### Changes
+- Added 4 Kafka connector JARs to `spark/Dockerfile` (spark-sql-kafka, spark-token-provider, kafka-clients, commons-pool2)
+- Created `spark/jobs/divvy_stream.py` — Structured Streaming consumer: Kafka → parse JSON → cast types → filter stale → foreachBatch → Postgres
+- Added `spark_checkpoints` named volume to `docker-compose.yml` for checkpoint persistence
+- Added checkpoint directory creation + ownership to `spark/Dockerfile`
+- Created `raw.station_status` table in Postgres (18 columns: station data + Kafka metadata + ingest timestamp)
+
+### Errors & Fixes
+
+| # | Error | Root Cause | Fix |
+|---|---|---|---|
+| 1 | `mkdir of file:/opt/spark/checkpoints/divvy_stream failed` | Named volume mounted as root:root, but Spark runs as user `spark` (UID 185) | `chown -R spark:spark /opt/spark/checkpoints` + added `RUN mkdir -p /opt/spark/checkpoints && chown spark:spark /opt/spark/checkpoints` to Dockerfile so future volume creations get correct ownership |
+| 2 | `spark.sql.adaptive.enabled is not supported in streaming DataFrames` | AQE doesn't apply to streaming queries — only batch | Warning only, not an error. Spark automatically disables AQE for streaming. No action needed. |
+
+### Key Decisions
+
+| Decision | Choice | Why |
+|---|---|---|
+| Kafka connector JARs | Baked into image (4 JARs) | Same approach as JDBC driver — reliable, offline, fast startup. Alternative: `--packages` at runtime (needs Maven, slow, fragile). |
+| foreachBatch for JDBC | Standard pattern | JDBC has no native streaming sink. foreachBatch bridges: each micro-batch is a static DataFrame → standard JDBC writer works. |
+| Checkpoint location | Named volume `spark_checkpoints` | Persists Kafka offsets across container restarts. Without it, restart re-reads all messages from `earliest`, causing duplicates. |
+| Stale station filter | `last_reported > now() - 1 hour` | One station had `last_reported: 86400` (Jan 2 1970). Filtering at 1 hour drops dead stations. Result: 2016 → 1128 rows per poll (888 stale stations filtered). |
+| is_* fields | `CAST(int AS BOOLEAN)` in Spark | GBFS returns 0/1 integers, not booleans. Cast in Spark so Postgres receives proper boolean. |
+| station_id | StringType throughout | Mixed format (667 UUIDs + 1349 numeric). Casting to bigint would fail on UUIDs. |
+| Optional scooter fields | Nullable in schema | Not all stations have scooters. `from_json` returns null for missing fields. 1099/1128 non-null in observed data. |
+| Trigger interval | 60 seconds | Matches producer poll interval. Each micro-batch processes messages that arrived since the last batch. |
+| Kafka metadata columns | partition, offset, timestamp | Traceability — can trace any row back to its Kafka position. Useful for debugging duplicates or gaps. |
+
+### Lessons
+- **apache/spark doesn't include Kafka connector** — the official image ships only core Spark JARs. Structured Streaming + Kafka needs 4 additional JARs (spark-sql-kafka, spark-token-provider, kafka-clients, commons-pool2). Baking them into the Dockerfile is the same pattern we used for the PostgreSQL JDBC driver.
+- **Named volumes inherit ownership from the image directory** — when a named volume is first created, Docker copies permissions from the container's directory. If the directory is root-owned but the process runs as non-root, the volume will be root-owned too. Fix: create the directory with correct ownership in the Dockerfile BEFORE the volume mounts.
+- **foreachBatch is the bridge for streaming-to-JDBC** — JDBC has no native Structured Streaming sink. foreachBatch gives each micro-batch as a static DataFrame, which can use the standard batch JDBC writer. This is the official Spark-recommended pattern.
+- **Stale data filtering matters** — 888 of 2016 stations (44%) had stale `last_reported` timestamps. Without filtering, the warehouse would be polluted with dead-station data. Filter early in the pipeline (Spark), not late (DBT).
+- **AQE doesn't apply to streaming** — `spark.sql.adaptive.enabled` is silently ignored for streaming queries. Don't rely on AQE for streaming partition coalescing.

@@ -64,15 +64,64 @@ stream = (spark
   .format("kafka")
   .option("kafka.bootstrap.servers", "kafka:9092")
   .option("subscribe", "divvy_station_status")
+  .option("startingOffsets", "earliest")
+  .option("failOnDataLoss", "false")
   .load())
 ```
+
+### Kafka Connector JARs
+The official `apache/spark:3.5.1` image does NOT include the Kafka connector. You need 4 JARs in `/opt/spark/jars/`:
+
+| JAR | Purpose |
+|---|---|
+| `spark-sql-kafka-0-10_2.12-3.5.1.jar` | Main connector — provides `KafkaSourceProvider` for `format("kafka")` |
+| `spark-token-provider-kafka-0-10_2.12-3.5.1.jar` | Dependency — handles Kafka auth tokens (loaded unconditionally) |
+| `kafka-clients-3.5.1.jar` | Kafka protocol client — all network I/O (fetch, offset commit) |
+| `commons-pool2-2.11.1.jar` | Object pooling — `spark-token-provider` uses it (without it: `NoClassDefFoundError`) |
+
+Bake them into the Dockerfile (same approach as the PostgreSQL JDBC driver):
+```dockerfile
+RUN curl -sL https://repo1.maven.org/maven2/org/apache/spark/spark-sql-kafka-0-10_2.12/3.5.1/spark-sql-kafka-0-10_2.12-3.5.1.jar \
+    -o /opt/spark/jars/spark-sql-kafka-0-10_2.12-3.5.1.jar && \
+    curl -sL https://repo1.maven.org/maven2/org/apache/spark/spark-token-provider-kafka-0-10_2.12/3.5.1/spark-token-provider-kafka-0-10_2.12-3.5.1.jar \
+    -o /opt/spark/jars/spark-token-provider-kafka-0-10_2.12-3.5.1.jar && \
+    curl -sL https://repo1.maven.org/maven2/org/apache/kafka/kafka-clients/3.5.1/kafka-clients-3.5.1.jar \
+    -o /opt/spark/jars/kafka-clients-3.5.1.jar && \
+    curl -sL https://repo1.maven.org/maven2/org/apache/commons/commons-pool2/2.11.1/commons-pool2-2.11.1.jar \
+    -o /opt/spark/jars/commons-pool2-2.11.1.jar
+```
+
+Alternative: `--packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1` at spark-submit time (downloads from Maven at runtime — slower, needs internet).
 
 ### foreachBatch (streaming → JDBC bridge)
 JDBC doesn't have a native streaming sink. Use `foreachBatch` to write each micro-batch:
 ```python
+def write_batch(df, batch_id):
+    (df.write
+        .format("jdbc")
+        .option("url", "jdbc:postgresql://postgres:5432/chicago_analytics")
+        .option("dbtable", "raw.station_status")
+        .mode("append")
+        .save())
+
 (df.writeStream
-  .foreachBatch(lambda df, epoch: df.write.format("jdbc").option(...).save())
-  .start())
+    .foreachBatch(write_batch)
+    .outputMode("append")
+    .option("checkpointLocation", "/opt/spark/checkpoints/divvy_stream")
+    .trigger(processingTime="60 seconds")
+    .start())
 ```
+
+### Checkpointing
+The checkpoint location stores Kafka offsets per partition. Without it, a stream restart re-reads all messages from the beginning, causing duplicates.
+
+- **Named volume** (`spark_checkpoints`) — persists across container restarts
+- **Directory ownership** — Spark runs as user `spark` (UID 185), but named volumes inherit ownership from the image directory. Create the directory with correct ownership in the Dockerfile:
+```dockerfile
+RUN mkdir -p /opt/spark/checkpoints && chown spark:spark /opt/spark/checkpoints
+```
+
+### AQE and Streaming
+`spark.sql.adaptive.enabled` is NOT supported for streaming DataFrames. Spark silently disables it and logs a warning. Don't rely on AQE for streaming partition coalescing.
 
 ---

@@ -72,23 +72,32 @@ graph LR
 
 ### 2. How Spark Links to Docker
 
-The Spark image is built from `spark/Dockerfile`. It starts from the official `apache/spark:3.5.1` image and adds the PostgreSQL JDBC driver:
+The Spark image is built from `spark/Dockerfile`. It starts from the official `apache/spark:3.5.1` image and adds the PostgreSQL JDBC driver + Kafka connector JARs:
 
 ```mermaid
 graph TB
     BASE["apache/spark:3.5.1<br/>official image"]
-    DOWNLOAD["Download postgresql-42.7.3.jar<br/>to /opt/spark/jars/"]
-    BASE --> DOWNLOAD
-    DOWNLOAD --> CUSTOM["Custom spark image<br/>chicago-data-pipeline-spark"]
+    JDBC["Download postgresql-42.7.3.jar<br/>to /opt/spark/jars/"]
+    KAFKA["Download 4 Kafka connector JARs<br/>to /opt/spark/jars/"]
+    CKPT["Create /opt/spark/checkpoints<br/>owned by spark user"]
+    BASE --> JDBC
+    JDBC --> KAFKA
+    KAFKA --> CKPT
+    CKPT --> CUSTOM["Custom spark image<br/>chicago-data-pipeline-spark"]
 
-    CUSTOM -->|"docker-compose.yml builds"| SM["spark-master container"]
+    CUSTOM -->|"docker-compose.yml builds"| SM["spark-master container<br/>+ checkpoint volume"]
     CUSTOM -->|"docker-compose.yml builds"| SW["spark-worker container"]
 
     SM -->|"command: spark-class<br/>org.apache.spark.deploy.<br/>master.Master"| MASTER["Master process<br/>UI: port 8180<br/>RPC: port 7077"]
     SW -->|"command: spark-class<br/>org.apache.spark.deploy.<br/>worker.Worker<br/>spark://spark-master:7077"| WORKER["Worker process<br/>connects to master<br/>UI: port 8081"]
 ```
 
-**Why a custom image?** The official `apache/spark` image doesn't include the PostgreSQL JDBC driver. Without it, `df.write.format("jdbc")` throws `ClassNotFoundException`. Baking the JAR into the image means:
+**Why a custom image?** The official `apache/spark` image doesn't include:
+1. **PostgreSQL JDBC driver** — needed for `df.write.format("jdbc")` to Postgres
+2. **Kafka connector JARs** (4 JARs) — needed for `readStream.format("kafka")` in Structured Streaming. The official image ships only core Spark JARs.
+3. **Checkpoint directory** — pre-created with spark user ownership so the named volume inherits correct permissions
+
+Baking JARs into the image means:
 - Works offline (no Maven Central download at runtime)
 - Faster startup (no download delay)
 - More reliable (no network dependency)
@@ -291,7 +300,7 @@ graph TB
 | `uv.lock` | uv (host only) | `uv sync` reads it | Host dev only |
 | `.venv/` | Host Python | Created by `uv sync` | Host dev only |
 | `kafka/producers/divvy_producer.py` | Host Python (Phase 2.3), Airflow container (Phase 2.6) | Bind mount `./kafka:/opt/airflow/kafka` | Host: now, Airflow: Phase 2.6 |
-| `spark/jobs/divvy_stream.py` | spark container (future) | Bind mount (Phase 2.4) | Every startup (runtime) |
+| `spark/jobs/divvy_stream.py` | spark container | Bind mount to `/opt/spark/jobs/` | Every startup (runtime, Phase 2.4) |
 
 ---
 
@@ -347,3 +356,45 @@ Three Kafka settings default to 3 (for production clusters). With a single broke
 - `KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1`
 
 Without these, Kafka can't create `__consumer_offsets` and consumers can't commit offsets.
+
+### 10. How Spark Structured Streaming Links Kafka to Postgres (Phase 2.4)
+
+The streaming consumer (`spark/jobs/divvy_stream.py`) runs inside the spark-master container and bridges Kafka to Postgres:
+
+```mermaid
+graph TB
+    subgraph "spark-master container"
+        SS["divvy_stream.py<br/>spark-submit --master local[*]"]
+        READ["readStream.format kafka<br/>subscribe: divvy_station_status"]
+        PARSE["from_json + cast<br/>int to boolean<br/>epoch to timestamp"]
+        FILTER["filter stale<br/>last_reported > 1hr"]
+        FB["foreachBatch<br/>JDBC write append"]
+        CKPT["checkpoint<br/>/opt/spark/checkpoints/divvy_stream"]
+    end
+
+    K["Kafka<br/>kafka:9092"] -->|"KAFKA_BOOTSTRAP_SERVERS"| READ
+    READ --> PARSE --> FILTER --> FB
+    FB -->|"JDBC<br/>postgres:5432"| PG["Postgres<br/>raw.station_status"]
+    CKPT -.->|"stores offsets<br/>after each batch"| READ
+    CKPTVOL[("spark_checkpoints<br/>named volume")] -.->|"persists across<br/>container restarts"| CKPT
+```
+
+**How it works:**
+1. `readStream.format("kafka")` subscribes to the `divvy_station_status` topic using `KAFKA_BOOTSTRAP_SERVERS` env var
+2. Each message arrives as binary — Spark casts `value` to string, then `from_json()` parses it into typed columns using a schema
+3. Transformations: `CAST(is_* AS BOOLEAN)` (GBFS uses 0/1 ints), `from_unixtime(last_reported)` (epoch to timestamp), filter stale stations
+4. `foreachBatch(write_batch)` — JDBC has no native streaming sink, so each micro-batch is written as a static DataFrame via standard JDBC `append`
+5. After each batch, Spark checkpoints offsets to `/opt/spark/checkpoints/divvy_stream` (named volume `spark_checkpoints`)
+6. On restart, the stream resumes from the last checkpointed offset — no duplicates, no data loss
+
+**Why 4 Kafka connector JARs?**
+The official `apache/spark:3.5.1` image ships only core Spark JARs. Structured Streaming + Kafka needs:
+- `spark-sql-kafka-0-10_2.12-3.5.1.jar` — main connector (`KafkaSourceProvider`)
+- `spark-token-provider-kafka-0-10_2.12-3.5.1.jar` — auth token dependency (loaded unconditionally)
+- `kafka-clients-3.5.1.jar` — Kafka protocol client (network I/O)
+- `commons-pool2-2.11.1.jar` — connection pooling (used by token provider)
+
+All 4 are baked into the Spark Dockerfile (same approach as the PostgreSQL JDBC driver).
+
+**Checkpoint volume ownership:**
+Spark runs as user `spark` (UID 185), but Docker named volumes inherit ownership from the image directory on first mount. The Dockerfile pre-creates `/opt/spark/checkpoints` with `chown spark:spark` so the volume gets correct permissions. Without this, Spark can't create the checkpoint subdirectory and fails with `mkdir failed`.

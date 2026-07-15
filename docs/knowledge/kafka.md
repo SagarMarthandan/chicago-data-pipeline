@@ -197,7 +197,7 @@ graph TB
 
 ### Consumer
 
-A **consumer** reads messages from Kafka topics. Our consumer will be Spark Structured Streaming (Phase 2.4).
+A **consumer** reads messages from Kafka topics. Our consumer is Spark Structured Streaming (`spark/jobs/divvy_stream.py`, built in Phase 2.4).
 
 ```mermaid
 graph TB
@@ -225,11 +225,43 @@ graph TB
 **Consumer groups:**
 - Consumers in the **same group** split partitions among themselves — each partition is read by exactly one consumer in the group
 - Consumers in **different groups** each get all messages independently
-- Our Spark Streaming job will be its own consumer group — it gets all messages from all 3 partitions
+- Our Spark Streaming job is its own consumer group — it gets all messages from all 3 partitions
 
-**Consumer offset management:**
-- **Kafka-committed offsets** — consumer commits "I've read up to offset N" to `__consumer_offsets` topic
-- **Spark checkpointing** — Spark stores its progress in a checkpoint directory on disk. More robust because it also stores the query state (not just offsets).
+**Consumer offset management — two approaches:**
+
+| Approach | How it works | Who uses it | Pros | Cons |
+|---|---|---|---|---|
+| **Kafka-committed offsets** | Consumer commits "I've read up to offset N" to `__consumer_offsets` topic | Standard Kafka consumers | Standard, lightweight | Only stores offset, not query state |
+| **Spark checkpointing** | Spark stores offsets + query state in a checkpoint directory on disk | Spark Structured Streaming | More robust — stores full query state (not just offsets). Survives consumer restarts | Requires a persistent volume; checkpoint dir must be owned by the Spark user |
+
+**How Spark Structured Streaming consumes from Kafka (Phase 2.4):**
+
+1. `readStream.format("kafka")` — subscribes to the topic, reads new messages as they arrive
+2. Each message arrives as a row with: `key` (binary), `value` (binary), `partition`, `offset`, `timestamp`
+3. Spark converts `value` from binary to string, then `from_json()` parses it into typed columns
+4. Transformations (cast, filter) are applied to the parsed DataFrame
+5. `foreachBatch` writes each micro-batch to Postgres via JDBC
+6. After each batch, Spark checkpoints its progress (offsets per partition) to the `spark_checkpoints` volume
+7. If the stream restarts, it resumes from the last checkpointed offset — no duplicates, no data loss
+
+**Key Spark-Kafka configuration options:**
+
+| Option | Our value | What it does |
+|---|---|---|
+| `kafka.bootstrap.servers` | `kafka:9092` | Docker network address of the Kafka broker |
+| `subscribe` | `divvy_station_status` | Topic to subscribe to |
+| `startingOffsets` | `earliest` | Start reading from the beginning of the topic (first run). On restart, checkpoint overrides this. |
+| `failOnDataLoss` | `false` | Don't crash if messages are missing (e.g., topic retention expired). Log a warning instead. |
+| `checkpointLocation` | `/opt/spark/checkpoints/divvy_stream` | Directory storing offsets + query state for fault recovery |
+
+**Why checkpointing matters:**
+Without checkpoints, a Spark Streaming restart re-reads ALL messages from `earliest` — causing massive duplicates in Postgres. The checkpoint stores the last consumed offset per partition, so the stream resumes exactly where it left off.
+
+**Checkpoint volume ownership gotcha:**
+Spark runs as user `spark` (UID 185), but Docker named volumes inherit ownership from the image directory on first creation. If the directory is root-owned, the volume will be root-owned too, and Spark can't create the checkpoint subdirectory. Fix: create the directory with correct ownership in the Dockerfile BEFORE the volume mounts:
+```dockerfile
+RUN mkdir -p /opt/spark/checkpoints && chown spark:spark /opt/spark/checkpoints
+```
 
 ### Broker
 
@@ -304,6 +336,8 @@ sequenceDiagram
     participant K as Kafka Broker
     participant ZK as Zookeeper
     participant C as Consumer (Spark)
+    participant PG as Postgres
+    participant CKPT as Checkpoint Volume
 
     P->>K: producer.send(topic, key, value)
     K->>K: hash(key) % 3 → partition 1
@@ -313,9 +347,10 @@ sequenceDiagram
 
     C->>K: readStream subscribe(topic)
     K->>C: return messages from partition 1
-    C->>C: parse JSON, write to Postgres
-    C->>K: checkpoint offset (on disk)
-    Note over C,K: Consumer tracks progress via checkpoint
+    C->>C: from_json + cast + filter stale
+    C->>PG: foreachBatch JDBC write to raw.station_status
+    C->>CKPT: checkpoint offset to spark_checkpoints volume
+    Note over C,CKPT: Consumer tracks progress via checkpoint
 ```
 
 **Step by step:**
@@ -324,18 +359,22 @@ sequenceDiagram
 3. Kafka computes `hash(station_id) % 3` → picks a partition (e.g., partition 1)
 4. Kafka appends the message to partition 1's log on disk
 5. Kafka sends an ack back to the producer (`acks="all"` → waits for all replicas)
-6. Consumer (Spark) reads from the partition, processes the message
-7. Consumer checkpoints its offset — if it restarts, it resumes from here
+6. Consumer (Spark `divvy_stream.py`) reads from the partition via `readStream.format("kafka")`
+7. Spark parses JSON (`from_json`), casts types (int→boolean, epoch→timestamp), filters stale stations
+8. Spark writes the micro-batch to Postgres `raw.station_status` via `foreachBatch` + JDBC
+9. Spark checkpoints its offset to `/opt/spark/checkpoints/divvy_stream` — if it restarts, it resumes from here
 
 ---
 
-## Our Setup (Phase 2.2 + 2.3)
+## Our Setup (Phase 2.2 + 2.3 + 2.4)
 
 | Component | Image | Version | Purpose |
 |---|---|---|---|
 | Zookeeper | `confluentinc/cp-zookeeper:7.6.0` | Confluent 7.6.0 | Kafka coordination (broker metadata, leader election) |
 | Kafka | `confluentinc/cp-kafka:7.6.0` | Confluent 7.6.0 | Broker — producers write, consumers read |
 | Producer | `kafka/producers/divvy_producer.py` | Host Python | Polls GBFS every 60s, publishes to topic |
+| Consumer | `spark/jobs/divvy_stream.py` | `apache/spark:3.5.1` + Kafka connector | Structured Streaming: reads topic → parses JSON → writes to Postgres |
+| Checkpoint | `spark_checkpoints` named volume | Docker volume | Persists Kafka offsets for Spark fault recovery |
 
 - **Topic:** `divvy_station_status` (3 partitions, replication factor 1)
 - **Auto-create topics:** enabled (but we create explicitly for custom partition count)
@@ -420,6 +459,15 @@ echo '{"key":"value"}' | kafka-console-producer \
 python kafka/producers/divvy_producer.py --once           # single poll (test)
 python kafka/producers/divvy_producer.py --interval 30    # poll every 30s
 python kafka/producers/divvy_producer.py --bootstrap kafka:9092  # inside Docker
-```
+
+# Run the Spark Structured Streaming consumer (from host via docker compose)
+docker compose exec spark-master /opt/spark/bin/spark-submit \
+    --master local[*] /opt/spark/jobs/divvy_stream.py --once   # single batch (test)
+docker compose exec spark-master /opt/spark/bin/spark-submit \
+    --master local[*] /opt/spark/jobs/divvy_stream.py          # continuous (60s batches)
+
+# Verify data is flowing into Postgres
+docker compose exec postgres psql -U chicago -d chicago_analytics \
+    -c "SELECT COUNT(*) FROM raw.station_status;"              # should grow over time
 
 ---
