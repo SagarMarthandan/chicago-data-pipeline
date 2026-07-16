@@ -23,6 +23,7 @@ A chronological log of operations, files created, and structural changes made to
 - [2026-07-15 — Phase 2.3: Kafka Producer](#2026-07-15--phase-23-kafka-producer)
 - [2026-07-15 — Phase 2.4: Spark Structured Streaming](#2026-07-15--phase-24-spark-structured-streaming)
 - [2026-07-16 — Phase 2.5: DBT Stream Models](#2026-07-16--phase-25-dbt-stream-models)
+- [2026-07-16 — Phase 2.6: Airflow Stream DAG](#2026-07-16--phase-26-airflow-stream-dag)
 ---
 
 ## 2026-07-08 — Project Setup & Migration
@@ -665,3 +666,35 @@ Created DBT staging and mart models for the Divvy station status streaming data.
 - `dim_date`: 1,292 rows (spanning 2023-01-01 through 2026-07-15)
 - Analytics query verified: "avg bikes available per station" returns correct results (top station: 42.0 avg bikes, 75.0 avg total vehicles)
 - FK relationship test `fact_station_reads.date_key → dim_date.date_key` passes
+
+## 2026-07-16 — Phase 2.6: Airflow Stream DAG
+
+### What Was Built
+- `airflow/dags/divvy_stream_dag.py` — Airflow DAG orchestrating the full streaming lifecycle:
+  - `create_topic` — creates `divvy_station_status` Kafka topic with 3 partitions (idempotent via `--if-not-exists`)
+  - `start_producer` — runs `divvy_producer.py --once` (single GBFS poll, ~2,016 messages to Kafka, exits cleanly)
+  - `start_stream` — starts Spark Structured Streaming as background process in spark-master via `docker exec`
+  - `wait_for_data` — polls Postgres every 15s for 5 min until `COUNT(raw.station_status) > INITIAL`
+  - `dbt_build` — runs `dbt build` in separate container (stg_station_status + fact_station_reads + all crime models)
+  - `stop_stream` — kills Spark background process (trigger_rule=ALL_DONE)
+  - `stop_producer` — cleans up PID file (trigger_rule=ALL_DONE, no-op in --once mode)
+
+### Infrastructure Changes
+- `airflow/Dockerfile` — switched from `uv pip install --system` (root) to `pip install` (airflow user). Removed uv COPY. The apache/airflow image uses a venv at `/home/airflow/.local` and refuses pip as root.
+- `spark/Dockerfile` — added `COPY entrypoint.sh`, `USER root`, `ENTRYPOINT ["/entrypoint.sh"]`. The entrypoint chowns the checkpoint volume before dropping to spark via gosu.
+- `spark/entrypoint.sh` — new entrypoint script: `chown -R spark:spark /opt/spark/checkpoints 2>/dev/null || true` then `exec gosu spark "$@"`. Fixes named volume root ownership on every container start.
+- `docker-compose.yml` — renamed `./kafka:/opt/airflow/kafka` to `./kafka:/opt/airflow/kafka_scripts`. The old mount path shadowed the `kafka-python` Python package (namespace package collision).
+
+### Key Design Decisions
+- **Producer in `--once` mode** — Airflow's BashOperator kills background processes when the task shell exits. `nohup`/`disown` don't reliably survive. `--once` runs in foreground, publishes one batch, exits cleanly. For 24/7 streaming, run producer as a separate Docker service (Phase 3).
+- **Spark stream as background process** — started via `docker exec ... nohup ... &` inside spark-master. The `stop_stream` task kills it after DBT build. `trigger_rule=ALL_DONE` ensures cleanup even on failure.
+- **`wait_for_data` delta logic** — captures initial row count, polls until `CURRENT > INITIAL`. Ensures we wait for NEW data, not just detect pre-existing rows.
+- **Cleanup with `ALL_DONE`** — `stop_stream` and `stop_producer` use `trigger_rule=ALL_DONE` so they run even if upstream tasks fail. No orphaned processes.
+
+### Verification
+- All 7 DAG tasks succeeded (create_topic, start_producer, start_stream, wait_for_data, dbt_build, stop_stream, stop_producer)
+- `raw.station_status`: 2,001 rows (2,016 Kafka messages, 15 dropped by stale station filter)
+- `fact_station_reads`: 2,001 rows, 1,125 unique stations
+- Analytics query: avg 5.55 bikes, 2.37 ebikes per station read
+- DBT build: all tests pass (streaming + crime models)
+- **Phase 2 gate met**: full end-to-end `docker compose up` → Kafka → producer → Spark streaming → Postgres → DBT → queryable marts

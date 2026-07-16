@@ -121,8 +121,11 @@ x-airflow-common: &airflow-common
     # DBT profiles for Airflow container (host: postgres, not localhost)
     - ./airflow/dbt_profiles:/opt/airflow/dbt_profiles
 
-    # Kafka producer scripts — mounted so Airflow can start the producer (Phase 2.6)
-    - ./kafka:/opt/airflow/kafka
+    # Kafka producer scripts — mounted so Airflow can start the producer (Phase 2.6).
+    # Mount as /opt/airflow/kafka_scripts (NOT /opt/airflow/kafka) to avoid
+    # shadowing the kafka-python package — Python treats /opt/airflow/kafka
+    # as a namespace package, hiding the installed kafka module.
+    - ./kafka:/opt/airflow/kafka_scripts
 
 
 services:

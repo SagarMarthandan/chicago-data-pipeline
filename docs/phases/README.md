@@ -56,4 +56,4 @@ chat-history/current-state.md       ← handoff for the NEXT session
 | `phase-2.3-divvy-producer.md` | Kafka producer (GBFS → topic) | Complete |
 | `phase-2.4-spark-streaming.md` | Spark Structured Streaming (Kafka → Postgres) | Complete |
 | `phase-2.5-dbt-stream-models.md` | DBT models for stream (stg_station_status + fact_station_reads) | Complete |
-| _next: `phase-2.6-airflow-stream-dag.md`_ | Airflow DAG for stream (start/monitor producer + streaming) | Not started |
+| `phase-2.6-airflow-stream-dag.md` | Airflow DAG for stream (start/monitor producer + streaming) | Complete |

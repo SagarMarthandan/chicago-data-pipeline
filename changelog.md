@@ -29,6 +29,7 @@ A running log of changes, errors, and fixes throughout the project. Use this to 
 - [2026-07-15 — Phase 2.3: Kafka producer](#2026-07-15--phase-23-kafka-producer)
 - [2026-07-15 — Phase 2.4: Spark Structured Streaming](#2026-07-15--phase-24-spark-structured-streaming)
 - [2026-07-16 — Phase 2.5: DBT Stream Models](#2026-07-16--phase-25-dbt-stream-models)
+- [2026-07-16 — Phase 2.6: Airflow Stream DAG](#2026-07-16--phase-26-airflow-stream-dag)
 
 ---
 
@@ -648,3 +649,27 @@ No errors encountered. All 59 DBT tests passed on first run.
 - **dim_date must span all fact tables** — when adding a second fact table with different date ranges, the date dimension must cover both. Otherwise the FK relationship test fails. Use UNION ALL of min/max from all sources.
 - **Streaming fact tables have different grain than batch** — crime facts are one row per event (unique ID). Station reads are one row per poll (repeating station_id). Don't blindly copy the unique test pattern from batch fact tables.
 - **Deduplication keys differ by source** — crime deduplicates on `id` (business key). Streaming data deduplicates on Kafka coordinates (partition + offset) since those are the system-of-record unique identifiers.
+
+## 2026-07-16 — Phase 2.6: Airflow Stream DAG
+
+### Errors and Fixes
+
+| # | Error | Root Cause | Fix |
+|---|---|---|---|
+| 1 | `ModuleNotFoundError: No module named 'kafka'` in Airflow container | `kafka-python` was in `airflow/requirements.txt` (added in Phase 2.3) but the Airflow image was never rebuilt | Rebuilt Airflow image with `--no-cache` |
+| 2 | `uv pip install --system` fails to install kafka-python — permission denied creating `/usr/local/lib/python3.11/site-packages/kafka` | uv has a bug/quirk creating certain package directories in the apache/airflow image, even as root | Switched Dockerfile from `uv pip install --system` to `pip install` as the airflow user |
+| 3 | `pip install` as root fails: "Please use 'airflow' user to run pip!" | apache/airflow image has a built-in guard that refuses pip as root | Run pip as `USER airflow` — the image uses a venv at `/home/airflow/.local` which is the install target |
+| 4 | `kafka-python` installed but `from kafka import KafkaProducer` fails — `kafka.__path__` points to `/opt/airflow/kafka` | `./kafka:/opt/airflow/kafka` volume mount shadows the `kafka` Python package — Python treats the mounted directory as a namespace package | Renamed mount to `./kafka:/opt/airflow/kafka_scripts` in docker-compose.yml + updated DAG's `PRODUCER_SCRIPT` path |
+| 5 | Spark streaming fails: `mkdir of /opt/spark/checkpoints/divvy_stream failed` | Named volume `spark_checkpoints` mounts as root:root; Spark runs as spark user and can't create subdirectories | Created `spark/entrypoint.sh` that chowns `/opt/spark/checkpoints` to spark:spark before dropping to spark via gosu. Added `ENTRYPOINT` to Spark Dockerfile. |
+| 6 | `start_producer` task fails: `head: cannot open '/tmp/divvy_producer.log'` | Background `nohup` process dies immediately in Airflow's BashOperator; log file never created; `head` returns exit code 1 | Switched producer to `--once` mode (foreground, single poll, exits cleanly). Added `\|\| true` to `head` commands. |
+| 7 | `stop_producer` task fails with exit code 1 | `kill` fails (process already dead) and `&&` short-circuits `rm` and `echo` | Changed `&&` to `;` after `kill` so cleanup runs regardless |
+| 8 | `wait_for_data` times out — 0 new rows after 5 minutes | Producer died after first poll; Spark checkpoint consumed all Kafka messages in a previous run; no new messages to process | Fixed by `--once` producer mode + wiping checkpoint/table/topic for clean runs |
+| 9 | DAG stuck in `queued` state, never picked up by scheduler | Previous failed DAG runs left orphaned task instances blocking the scheduler | `docker compose down` + fresh start clears all Airflow metadata |
+
+### Lessons
+- **Volume mount paths can shadow Python packages** — mounting `./kafka` to `/opt/airflow/kafka` made Python find the empty directory instead of the installed `kafka-python` package. Always check mount paths don't collide with package names.
+- **apache/airflow image has a root pip guard** — it refuses `pip install` as root. The image uses a venv at `/home/airflow/.local`; run pip as the airflow user.
+- **`uv pip install --system` can silently fail on certain packages** — uv couldn't create the `kafka` directory in site-packages despite running as root. When uv fails, fall back to pip.
+- **Airflow BashOperator kills background processes** — `nohup` + `disown` don't reliably survive when the task's shell exits. For long-running processes, use `--once` mode or manage outside Airflow.
+- **Named volumes mount as root** — Docker named volumes get root ownership on first mount, regardless of Dockerfile `chown`. Use an entrypoint script to fix permissions on every start.
+- **`kill` with `&&` short-circuits cleanup** — if the process is already dead, `kill` returns non-zero and `&&` skips cleanup. Use `;` to ensure cleanup always runs.

@@ -26,21 +26,18 @@ RUN apt-get update \
 ARG DOCKER_GID=999
 RUN groupdel docker 2>/dev/null; groupadd -g ${DOCKER_GID} docker && usermod -aG docker airflow
 
-# Install uv by copying from the official uv Docker image.
-# This is a multi-stage COPY — pulls just the uv binary, no install script needed.
-# Faster and more reliable than curl | sh or pip install uv.
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-# Install Airflow providers using uv pip install (10-100x faster than pip).
-# --system: install into the container's system Python (no venv needed in containers).
-# --no-cache-dir: don't keep downloaded wheels (saves image size).
-#
-# IMPORTANT: Run as root because uv pip install --system writes to
-# /usr/local/lib/python3.11/site-packages/ which is owned by root.
-# The airflow user (UID 50000) doesn't have write access.
-USER root
-COPY requirements.txt /requirements.txt
-RUN uv pip install --system --no-cache-dir -r /requirements.txt
+# Install Python dependencies as the airflow user.
+# The apache/airflow image uses a virtualenv at /home/airflow/.local
+# (VIRTUAL_ENV=/home/airflow/.local, pip at /home/airflow/.local/bin/pip).
+# The image refuses `pip install` as root ("Please use 'airflow' user").
+# Running pip as airflow (without --user — the venv IS the install target)
+# installs into /home/airflow/.local/lib/python3.11/site-packages/.
+# We previously used `uv pip install --system` as root to bypass the root
+# guard, but uv fails to create the `kafka` directory (permission denied).
+USER airflow
+COPY --chown=airflow:airflow requirements.txt /requirements.txt
+RUN pip install --no-cache-dir -r /requirements.txt
 
 # Switch back to airflow user for running the services
 USER airflow

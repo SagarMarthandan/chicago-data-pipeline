@@ -7,8 +7,8 @@ A data engineering learning project that answers: **Does crime near a Divvy bike
 | Layer | Tool | Phase |
 |---|---|---|
 | Warehouse | Postgres (local) → BigQuery (cloud) | 1 → 4 |
-| Batch processing | Spark DataFrames | 1 |
-| Streaming | Kafka + Spark Structured Streaming | 2 |
+| Batch processing | Spark DataFrames | 1 ✅ |
+| Streaming | Kafka + Spark Structured Streaming | 2 ✅ |
 | Transformation | DBT | 1+ |
 | Orchestration | Airflow | 1+ |
 | Observability | Grafana | 3 |
@@ -88,11 +88,11 @@ graph LR
     P4["Phase 4<br/>Cloud Migration<br/>Terraform + BigQuery + Airbyte"]
 
     P1 -->|"✅ DONE: docker compose up<br/>DAG runs, marts queryable"| P2
-    P2 -->|"done when: live Divvy data<br/>in Postgres via Kafka"| P3
+    P2 -->|"✅ DONE: live Divvy data<br/>in Postgres via Kafka"| P3
     P3 -->|"done when: dashboards + tests<br>+ SLAs operational"| P4
 
     style P1 fill:#d4f4dd,stroke:#4ca85a
-    style P2 fill:#f0f0f0,stroke:#999
+    style P2 fill:#d4f4dd,stroke:#4ca85a
     style P3 fill:#f0f0f0,stroke:#999
     style P4 fill:#f0f0f0,stroke:#999
 ```
@@ -111,6 +111,19 @@ graph LR
 | **1.6 Phase 1 verification** | **Complete** | Cold start → DAG run → 4 tasks succeed → marts queryable (263,394 fact rows). **Phase 1 gate passed.** |
 
 **Phase 1: DONE.** `docker compose up` → trigger DAG → 4 tasks succeed → DBT marts queryable. Verified 2026-07-13.
+
+### Phase 2 — Live Stream
+
+| Sub-Phase | Status | What was built |
+|---|---|---|
+| **2.1 GBFS data source** | **Complete** | Explored Divvy GBFS feeds. 4 design-changing findings: station_id is mixed UUID+numeric (must stay string), is_* fields are int 0/1 (not bool), scooter fields optional, dead station filtering needed. |
+| **2.2 Kafka + Zookeeper** | **Complete** | Confluent Platform 7.6.0. Zookeeper mode (not KRaft). Two listeners: kafka:9092 (Docker) + localhost:29092 (host). 3 partitions for station_status topic. |
+| **2.3 Kafka producer** | **Complete** | `divvy_producer.py` — polls GBFS every 60s, publishes ~2,016 station statuses as JSON to Kafka. `--once` mode for testing. kafka-python 3.0.8. |
+| **2.4 Spark streaming** | **Complete** | `divvy_stream.py` — Structured Streaming: readStream Kafka → from_json → cast types → filter stale (44%) → foreachBatch → Postgres `raw.station_status`. 4 Kafka connector JARs baked into Spark image. Checkpoint volume for offset persistence. |
+| **2.5 DBT stream models** | **Complete** | `stg_station_status` (dedup on Kafka partition+offset) + `fact_station_reads` (one row per station poll, date_key FK, derived total_vehicles_available). `dim_date` expanded to span both crime (2023) + station (2026) dates. 59/59 tests pass. |
+| **2.6 Airflow stream DAG** | **Complete** | `divvy_stream_dag.py` — 7-task lifecycle: create_topic → start_producer (--once) → start_stream → wait_for_data → dbt_build → stop_stream → stop_producer. All tasks succeed. 2,001 rows in fact_station_reads. |
+
+**Phase 2: DONE.** `docker compose up` → trigger divvy_stream DAG → Kafka → Spark streaming → Postgres → DBT marts queryable. Verified 2026-07-16.
 
 See `docs/phases/` for phase-completion documents with architecture diagrams, errors hit, and verification.
 
@@ -135,22 +148,30 @@ chicago-data-pipeline/
 ├── README.md                 # this file
 ├── changelog.md              # errors, fixes, lessons (read before working)
 ├── chicago-pipeline-plan.md  # full phased design
-├── docker-compose.yml        # 7 services: Postgres, Spark, Airflow (incl. dag-processor)
+├── docker-compose.yml        # 10 services: Postgres, Spark, Airflow, Kafka, Zookeeper + spark_checkpoints volume
 ├── init.sql                  # Postgres init: 3 schemas + airflow DB
 ├── pyproject.toml            # uv project mode (host Python)
 ├── uv.lock                   # reproducible installs
 ├── airflow/
-│   ├── Dockerfile            # Airflow 3.0 + Docker CLI + DOCKER_GID build arg + ingestion deps
+│   ├── Dockerfile            # Airflow 3.0 + Docker CLI + pip install as airflow user (kafka-python)
 │   ├── passwords.json        # SimpleAuthManager passwords
-│   ├── requirements.txt      # postgres + docker providers + ingestion deps (pandas, pyarrow, requests)
-│   └── dags/                 # DAG files (crime_batch_dag.py — Phase 1.5+1.6)
+│   ├── requirements.txt      # postgres + docker providers + ingestion deps + kafka-python
+│   ├── dags/
+│   │   ├── crime_batch_dag.py     # Phase 1.5 — batch pipeline DAG
+│   │   └── divvy_stream_dag.py    # Phase 2.6 — streaming lifecycle DAG
+│   └── dbt_profiles/profiles.yml
 ├── spark/
-│   ├── Dockerfile            # apache/spark:3.5.1 + PostgreSQL JDBC
+│   ├── Dockerfile            # apache/spark:3.5.1 + JDBC + Kafka connector (4 JARs) + entrypoint
+│   ├── entrypoint.sh         # chowns checkpoint volume, drops to spark via gosu
 │   └── jobs/
-│       └── crime_batch.py    # Spark batch ETL: Parquet → clean → Postgres (Phase 1.3)
+│       ├── crime_batch.py    # Spark batch ETL: Parquet → clean → Postgres (Phase 1.3)
+│       └── divvy_stream.py   # Spark Structured Streaming: Kafka → Postgres (Phase 2.4)
 ├── ingestion/
 │   └── download_crime.py     # Socrata API → Parquet (Phase 1.2)
-├── dbt/                      # DBT transformation project (Phase 1.4)
+├── kafka/                    # Phase 2.3
+│   └── producers/
+│       └── divvy_producer.py # GBFS → Kafka producer (--once mode for Airflow)
+├── dbt/                      # DBT transformation project
 │   ├── Dockerfile             # separate dbt image (protobuf conflict with Airflow 3.0)
 │   ├── dbt_project.yml       # model config, materialization, schema mapping
 │   ├── profiles.yml          # Postgres connection (gitignored — has password)
@@ -160,14 +181,16 @@ chicago-data-pipeline/
 │   │   └── generate_schema_name.sql  # override schema concatenation
 │   ├── models/
 │   │   ├── staging/
-│   │   │   ├── stg_crime_events.sql  # view: rename, cast, dedup
-│   │   │   └── schema.yml    # source definition + staging tests
+│   │   │   ├── stg_crime_events.sql      # view: rename, cast, dedup
+│   │   │   ├── stg_station_status.sql    # Phase 2.5 — dedup on Kafka coordinates
+│   │   │   └── schema.yml
 │   │   └── marts/
-│   │       ├── dim_date.sql
+│   │       ├── dim_date.sql              # spans both crime (2023) + station (2026) dates
 │   │       ├── dim_community_area.sql
 │   │       ├── dim_crime_type.sql
 │   │       ├── fact_crime_events.sql
-│   │       └── schema.yml    # 31 data tests (20 standard + 11 dbt-expectations)
+│   │       ├── fact_station_reads.sql    # Phase 2.5 — one row per station poll
+│   │       └── schema.yml
 │   └── seeds/
 │       └── community_areas.csv  # 77 community areas from Chicago Data Portal
 ├── data/                     # Parquet output (gitignored)
@@ -183,12 +206,9 @@ chicago-data-pipeline/
     ├── phases/                    # phase-completion docs (one per sub-phase)
     │   ├── README.md
     │   ├── TEMPLATE.md
-    │   ├── phase-1.1-docker.md
-    │   ├── phase-1.2-ingestion.md
-    │   ├── phase-1.3-spark-batch.md
-    │   ├── phase-1.4-dbt-models.md
-    │   ├── phase-1.5-airflow-dag.md
-    │   └── phase-1.6-verification.md
+    │   ├── phase-1.1-docker.md through phase-1.6-verification.md
+    │   ├── phase-2.1-gbfs-data-source.md through phase-2.5-dbt-stream-models.md
+    │   └── phase-2.6-airflow-stream-dag.md
     └── conventions/
         ├── airflow.md
         ├── dbt.md
@@ -233,6 +253,7 @@ docker compose ps -a
 | Spark Master UI | http://localhost:8180 | — |
 | Spark Worker UI | http://localhost:8081 | — |
 | Postgres | localhost:5432 | chicago / (from .env) |
+| Kafka (host) | localhost:29092 | — |
 
 ### Host Python (for dev scripts)
 
@@ -249,8 +270,9 @@ docker compose exec postgres psql -U chicago -d chicago_analytics  # psql shell
 docker compose down                        # stop (preserves data)
 docker compose down -v                     # stop + WIPE all data
 ```
+### Running the pipeline (via Airflow)
 
-### Running the pipeline (Phase 1 — via Airflow)
+**Important:** On a cold start, run `crime_batch` first, then `divvy_stream`. The `dim_date` model depends on both raw tables. crime_batch's `dbt_build` fails on `stg_station_status` (expected, non-blocking) — all crime models build fine. Then divvy_stream's `dbt_build` succeeds because both raw tables exist.
 
 ```bash
 # 1. Start all services
@@ -259,17 +281,19 @@ docker compose up -d
 # 2. Wait for services to be healthy (~90s)
 docker compose ps -a
 
-# 3. Trigger the DAG (from Airflow CLI or UI at http://localhost:8080)
+# 3. Trigger crime_batch DAG first (batch pipeline)
 docker exec chicago-data-pipeline-airflow-scheduler-1 airflow dags trigger crime_batch
 
-# 4. Check DAG state
-docker exec chicago-data-pipeline-airflow-scheduler-1 airflow dags state crime_batch "<dag_run_id>"
+# 4. Wait for it to finish, then trigger divvy_stream DAG (streaming pipeline)
+docker exec chicago-data-pipeline-airflow-scheduler-1 airflow dags trigger divvy_stream
 
 # 5. Query marts
 docker compose exec postgres psql -U chicago -d chicago_analytics -c "SELECT COUNT(*) FROM mart.fact_crime_events;"
+docker compose exec postgres psql -U chicago -d chicago_analytics -c "SELECT COUNT(*) FROM mart.fact_station_reads;"
 ```
 
-The DAG runs 4 tasks: download_crime → clear_dbt_schemas → spark_crime_batch → dbt_build (~163s total).
+The crime_batch DAG runs 4 tasks: download_crime → clear_dbt_schemas → spark_crime_batch → dbt_build (~163s total).
+The divvy_stream DAG runs 7 tasks: create_topic → start_producer → start_stream → wait_for_data → dbt_build → stop_stream → stop_producer (~60s total).
 
 ### Running pipeline steps manually (for debugging)
 

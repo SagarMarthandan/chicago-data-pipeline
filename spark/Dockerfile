@@ -69,10 +69,17 @@ RUN curl -sL https://repo1.maven.org/maven2/org/apache/spark/spark-sql-kafka-0-1
     curl -sL https://repo1.maven.org/maven2/org/apache/commons/commons-pool2/2.11.1/commons-pool2-2.11.1.jar \
     -o /opt/spark/jars/commons-pool2-2.11.1.jar
 
-# Checkpoint directory for Structured Streaming (Phase 2.4).
-# Named volumes inherit permissions from this directory on first mount.
-# Must be owned by spark user — Spark runs as spark, not root.
-RUN mkdir -p /opt/spark/checkpoints && chown spark:spark /opt/spark/checkpoints
+# ============================================================
+# Entrypoint — fix checkpoint volume ownership on every start
+# ============================================================
+# Named volumes mount as root:root, but Spark runs as spark.
+# The entrypoint chowns the checkpoint dir before dropping to spark
+# via gosu (available in the apache/spark image). This persists
+# across docker compose down -v + up — no manual chown needed.
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
-# Switch back to the spark user (UID 185 in apache/spark images)
-USER spark
+# Stay as root so the entrypoint can chown; gosu drops to spark.
+USER root
+
+ENTRYPOINT ["/entrypoint.sh"]
