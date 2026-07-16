@@ -15,6 +15,7 @@ A data engineering learning project that answers: **Does crime near a Divvy bike
 | Ingestion (cloud) | Airbyte | 4 |
 | Infra (cloud) | Terraform | 4 |
 | Containerization | Docker + Docker Compose | 1+ |
+| CI/CD | GitHub Actions + GHCR | 5 |
 
 ## Data Sources
 
@@ -86,15 +87,18 @@ graph LR
     P2["Phase 2<br/>Live Stream<br/>Kafka + Spark Streaming"]
     P3["Phase 3<br/>Observability<br/>Grafana + DBT Tests + SLAs"]
     P4["Phase 4<br/>Cloud Migration<br/>Terraform + BigQuery + Airbyte"]
+    P5["Phase 5<br/>CI/CD Integration<br/>GitHub Actions + GHCR"]
 
     P1 -->|"✅ DONE: docker compose up<br/>DAG runs, marts queryable"| P2
     P2 -->|"✅ DONE: live Divvy data<br/>in Postgres via Kafka"| P3
     P3 -->|"done when: dashboards + tests<br>+ SLAs operational"| P4
+    P4 -->|"done when: Terraform + BigQuery<br>+ Airbyte operational"| P5
 
     style P1 fill:#d4f4dd,stroke:#4ca85a
     style P2 fill:#d4f4dd,stroke:#4ca85a
     style P3 fill:#f0f0f0,stroke:#999
     style P4 fill:#f0f0f0,stroke:#999
+    style P5 fill:#f0f0f0,stroke:#999
 ```
 
 ## Progress
@@ -133,6 +137,7 @@ See `docs/phases/` for phase-completion documents with architecture diagrams, er
 2. **Live stream** — Divvy GBFS → Kafka → Spark Structured Streaming → Postgres
 3. **Observability** — Grafana dashboards, DBT tests, Airflow SLAs
 4. **Cloud migration** — Terraform → BigQuery + GCS, Airbyte ingestion
+5. **CI/CD integration** — GitHub Actions, branch protection, PR checks, versioned releases
 
 Each phase is a working system before the next begins. See `AGENTS.md` for phase gates.
 

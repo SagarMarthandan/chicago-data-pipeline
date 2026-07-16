@@ -1,6 +1,6 @@
 # Current State — Handoff Document
 
-> **Read this first in a new session.** This file is the handoff: current state, active decisions, and next steps. Last updated: 2026-07-16 (end of session — Phase 2 COMPLETE, Phase 3 next).
+> **Read this first in a new session.** This file is the handoff: current state, active decisions, and next steps. Last updated: 2026-07-16 (end of session — Phase 2 COMPLETE, Phase 5 plan added, Phase 3 next).
 
 ---
 
@@ -10,7 +10,7 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 
 - **Repo:** `~/chicago-data-pipeline/` (WSL, Ubuntu on Windows 10)
 - **Git:** initialized on `main`, no commits yet (user commits manually)
-- **Phase:** 1 COMPLETE. Phase 2 COMPLETE (2.1 GBFS ✅, 2.2 Kafka+Zookeeper ✅, 2.3 Producer ✅, 2.4 Spark Streaming ✅, 2.5 DBT Stream Models ✅, 2.6 Airflow DAG ✅). Phase 3 NEXT (locked until ready). Phase 4 locked.
+- **Phase:** 1 COMPLETE. Phase 2 COMPLETE (2.1 GBFS ✅, 2.2 Kafka+Zookeeper ✅, 2.3 Producer ✅, 2.4 Spark Streaming ✅, 2.5 DBT Stream Models ✅, 2.6 Airflow DAG ✅). Phase 3 NEXT (locked until ready). Phase 4 locked. Phase 5 locked (plan written in chicago-pipeline-plan.md).
 - **AI mode:** AI-writes-code (user said "you write it" — explicit mode switch from Socratic)
 
 ## Tech Stack
@@ -24,6 +24,7 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 | Orchestration | Airflow | 1+ ✅ |
 | Observability | Grafana | 3 (locked) |
 | Cloud | Terraform + Airbyte | 4 (locked) |
+| CI/CD | GitHub Actions + GHCR | 5 (locked) |
 
 ## Current Infrastructure
 
@@ -248,8 +249,12 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
 2. **Phase 4: Cloud** — Terraform → BigQuery + Airbyte
    - Requires: Phase 3 complete (observability in place before migrating to cloud)
    - New: Terraform infrastructure, BigQuery warehouse, Airbyte ingestion
+3. **Phase 5: CI/CD** — GitHub Actions + GHCR
+   - Requires: Phase 4 complete
+   - New: Branch protection (dev/prod), PR checks (ruff + dbt parse + compose validate), versioned releases (semantic versioning), image push to GHCR
+   - Plan added to `chicago-pipeline-plan.md` (sections 5.1–5.6)
 
-- **Phase gates:** Phase 1 COMPLETE. Phase 2 COMPLETE (2.1–2.6 done). Phase 3 locked until ready to start. Phase 4 locked. Do NOT skip ahead.
+- **Phase gates:** Phase 1 COMPLETE. Phase 2 COMPLETE (2.1–2.6 done). Phase 3 locked until ready to start. Phase 4 locked. Phase 5 locked. Do NOT skip ahead.
 - **Learning protocol:** Socratic by default. User must say "write the code" to get code. Currently in AI-writes-code mode.
 - **Three-doc system:** `changelog.md` (errors), `docs/knowledge/` (reference, one file per topic), `docs/operations-performed.md` (audit trail). Update all three after every change.
 - **Phase-completion docs:** After each sub-phase is verified, create `docs/phases/phase-X.Y-<name>.md` from `TEMPLATE.md`. Include one high-level mermaid diagram + pointer to `docs/knowledge/architecture.md` for details.

@@ -24,6 +24,7 @@ Full plan: see `chicago-pipeline-plan.md` (in repo root).
 | Ingestion (cloud) | Airbyte | 4 |
 | Infra (cloud) | Terraform | 4 |
 | Containerization | Docker + Docker Compose | 1+ |
+| CI/CD | GitHub Actions + GHCR | 5 |
 
 ## Phase Gates — DO NOT SKIP AHEAD
 
@@ -33,6 +34,7 @@ Full plan: see `chicago-pipeline-plan.md` (in repo root).
 | 2 — Stream | Locked | Divvy live data in Postgres via Kafka + Spark Streaming |
 | 3 — Observability | Locked | Grafana dashboards + DBT tests + Airflow SLAs |
 | 4 — Cloud | Locked | Terraform → BigQuery + Airbyte |
+| 5 — CI/CD | Locked | GitHub Actions: branch protection + PR checks + versioned releases |
 
 **Rule:** Phase N+1 stays locked until Phase N works end-to-end and is verified.
 If I ask you to help with Phase 2 while Phase 1 isn't done, refuse and remind me.

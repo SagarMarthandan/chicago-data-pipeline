@@ -576,6 +576,250 @@ Spark → GCS (Parquet, data lake) → BigQuery (raw) → DBT → BigQuery (mart
 
 ---
 
+## Phase 5 — GitHub CI/CD Integration
+
+**Goal:** Every change to the pipeline goes through a pull request, runs automated checks, and gets versioned before it lands on `prod`. No more direct commits to production.
+
+### 5.1 Branch strategy
+
+```
+feature/* ──PR──▶ dev ──PR──▶ prod
+                   │
+                   └── CI builds + tests on every push
+
+prod ──tag──▶ v1.0.0, v1.1.0, v1.2.0 (semantic versioning)
+```
+
+| Branch | Purpose | Who commits | Rules |
+|---|---|---|---|
+| `prod` | Production. What's deployed. Stable. | Merges only (no direct push) | Requires PR from `dev`, all CI checks pass, 1 review |
+| `dev` | Development integration. Where features land. | Merges from feature branches | Requires PR, CI checks pass |
+| `feature/*` | Short-lived work. One per task/phase. | You | Branch off `dev`, PR back to `dev` |
+
+**Transition from current state:** Your `main` branch becomes `prod`. Create `dev` from `prod`. All future work branches off `dev`.
+
+```bash
+# One-time setup
+git branch -m main prod          # rename main → prod
+git push origin prod             # push prod
+git checkout -b dev prod         # create dev from prod
+git push origin dev              # push dev
+# Set prod as default branch in GitHub Settings → Branches
+```
+
+### 5.2 Versioning
+
+**Semantic versioning:** `v{MAJOR}.{MINOR}.{PATCH}`
+
+| Bump | When | Example |
+|---|---|---|
+| MAJOR | Breaking change (schema redesign, tool swap) | `v1.0.0` → `v2.0.0` |
+| MINOR | New feature (new DAG, new DBT model, new dashboard) | `v1.0.0` → `v1.1.0` |
+| PATCH | Bug fix, doc update, config tweak | `v1.1.0` → `v1.1.1` |
+
+**How versions are created:**
+1. PR merged from `dev` → `prod`
+2. GitHub Actions workflow tags the merge commit with the next version
+3. GitHub Release is created with auto-generated changelog
+
+**Your current v1–v17 informal tags become `v1.0.0` baseline.** First prod merge after Phase 5 setup = `v1.1.0` (Phase 3 observability).
+
+### 5.3 GitHub Actions workflows
+
+Three workflows, each triggered by a different event:
+
+#### Workflow 1: CI checks (on every PR)
+
+```yaml
+# .github/workflows/ci.yml
+# Triggers: pull_request to dev or prod
+name: CI Checks
+on:
+  pull_request:
+    branches: [dev, prod]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install ruff
+      - run: ruff check airflow/ spark/ kafka/ ingestion/
+
+  validate-dbt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install dbt-postgres
+      - working-directory: dbt
+        run: dbt parse --profiles-dir .
+
+  validate-compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose config -q   # validate YAML syntax
+
+  build-images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose build airflow-init spark-master dbt-build
+```
+
+**What this catches:**
+- Python syntax errors, unused imports, style violations (ruff)
+- DBT model parse errors, broken refs, invalid Jinja (dbt parse)
+- docker-compose.yml syntax errors (compose config)
+- Dockerfile build failures (compose build)
+
+#### Workflow 2: Build & push images (on merge to dev)
+
+```yaml
+# .github/workflows/build.yml
+# Triggers: push to dev
+name: Build & Push
+on:
+  push:
+    branches: [dev]
+
+jobs:
+  push-images:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - run: |
+          docker compose build \
+            --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+            --build-arg GIT_SHA=${{ github.sha }} \
+            --build-arg VERSION=dev-${{ github.sha }} \
+            airflow-init spark-master dbt-build
+      - run: |
+          docker tag chicago-data-pipeline-airflow-init ghcr.io/${{ github.repository }}/airflow:dev
+          docker tag chicago-data-pipeline-spark-master ghcr.io/${{ github.repository }}/spark:dev
+          docker tag chicago-data-pipeline-dbt-build ghcr.io/${{ github.repository }}/dbt:dev
+          docker push ghcr.io/${{ github.repository }}/airflow:dev
+          docker push ghcr.io/${{ github.repository }}/spark:dev
+          docker push ghcr.io/${{ github.repository }}/dbt:dev
+```
+
+**Why:** Images are available in GitHub Container Registry (GHCR) for any environment to pull. No local builds needed on deploy.
+
+#### Workflow 3: Release (on merge to prod)
+
+```yaml
+# .github/workflows/release.yml
+# Triggers: push to prod (i.e., PR merged from dev → prod)
+name: Release
+on:
+  push:
+    branches: [prod]
+
+jobs:
+  tag-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0    # need full history for changelog
+      - name: Determine next version
+        id: version
+        run: |
+          LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v1.0.0")
+          # Bump minor by default; use commit message [major] or [patch] to override
+          if git log --format=%B $LATEST..HEAD | grep -q "\[major\]"; then
+            NEXT=$(echo $LATEST | awk -F. '{print "v"($1+1)".0.0"}')
+          elif git log --format=%B $LATEST..HEAD | grep -q "\[patch\]"; then
+            NEXT=$(echo $LATEST | awk -F. '{print $1"."$2"."($3+1)}')
+          else
+            NEXT=$(echo $LATEST | awk -F. '{print $1"."($2+1)".0"}')
+          fi
+          echo "version=$NEXT" >> $GITHUB_OUTPUT
+      - name: Tag and release
+        run: |
+          git tag ${{ steps.version.outputs.version }}
+          git push origin ${{ steps.version.outputs.version }}
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - run: |
+          V=${{ steps.version.outputs.version }}
+          docker compose build \
+            --build-arg VERSION=$V \
+            airflow-init spark-master dbt-build
+          docker tag chicago-data-pipeline-airflow-init ghcr.io/${{ github.repository }}/airflow:$V
+          docker tag chicago-data-pipeline-spark-master ghcr.io/${{ github.repository }}/spark:$V
+          docker tag chicago-data-pipeline-dbt-build ghcr.io/${{ github.repository }}/dbt:$V
+          docker push ghcr.io/${{ github.repository }}/airflow:$V
+          docker push ghcr.io/${{ github.repository }}/spark:$V
+          docker push ghcr.io/${{ github.repository }}/dbt:$V
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+```
+
+**Version bump control:** Default is minor bump. Put `[patch]` or `[major]` in a commit message to override.
+
+### 5.4 Branch protection rules
+
+Configure in GitHub: **Settings → Branches → Branch protection rules**
+
+| Rule | `prod` | `dev` |
+|---|---|---|
+| Require pull request before merging | Yes | Yes |
+| Required approvals | 1 | 1 (can relax to 0 for solo dev) |
+| Require status checks to pass | Yes | Yes |
+| Require branches to be up to date | Yes | Yes |
+| Restrict direct pushes | Yes | Yes |
+| Allow force pushes | No | No |
+
+**For solo development:** Set dev approvals to 0 (you approve your own PRs). Keep prod at 1 — even if it's you, the PR view forces you to review your own diff before it lands.
+
+### 5.5 Files created in Phase 5
+
+```
+.github/
+├── workflows/
+│   ├── ci.yml           # PR checks: ruff, dbt parse, compose validate, build
+│   ├── build.yml        # dev push: build + push images to GHCR
+│   └── release.yml      # prod push: tag version + push images + GitHub Release
+```
+
+No changes to existing pipeline code. This phase is pure DevOps — it wraps the existing codebase in automated quality gates.
+
+### 5.6 Phase 5 deliverable & verification
+
+**Done when:**
+- `prod` and `dev` branches exist, `main` is retired
+- Direct push to `prod` is rejected by GitHub
+- PR to `dev` triggers CI checks (ruff, dbt parse, compose validate, build)
+- Merge to `dev` pushes images to GHCR
+- Merge to `prod` creates a git tag + GitHub Release with changelog
+- `docker compose pull` works from GHCR images (no local build needed)
+
+**Learning checkpoints:**
+- [ ] CI fails on a bad DBT model → learn that `dbt parse` catches syntax errors without a database
+- [ ] Branch protection blocks your direct push → learn why this is good even solo
+- [ ] GHCR image doesn't match local → learn build args, image tagging, layer caching
+- [ ] Release workflow tags wrong version → learn semantic versioning, commit message conventions
+- [ ] Force push to prod is rejected → learn why history rewriting on prod is dangerous
+
+---
+
 ## The Analytical Payoff
 
 Once Phase 3 is done, you can answer the driving question:
@@ -617,11 +861,6 @@ ORDER BY c.community_area_id, c.month
 ```
 
 This is the query that makes the whole project a portfolio piece, not a tutorial exercise.
-
----
-
-## Tool-by-Tool Learning Objectives
-
 | Tool | What you should be able to explain after this project |
 |---|---|
 | **Docker** | Multi-service compose, networking by service name, volume mounts, init scripts, building images |
@@ -633,6 +872,7 @@ This is the query that makes the whole project a portfolio piece, not a tutorial
 | **Grafana** | Data sources, dashboards, alerts, variables, geospatial panels |
 | **Terraform** | Resources, state, providers, variables, modules, destroy safety |
 | **Airbyte** | Connectors, sources, destinations, sync modes (full refresh vs incremental) |
+| **GitHub Actions** | Workflows, triggers, runners, secrets, CI/CD pipelines, branch protection |
 
 ---
 
@@ -657,5 +897,6 @@ Don't rush. The point is learning, not finishing.
 - **Week 3-4:** Phase 2 (stream). Expect Kafka/Spark integration pain. It's normal.
 - **Week 5:** Phase 3 (observability). This is where it starts feeling real.
 - **Week 6+:** Phase 4 (cloud). Optional but high-value for portfolio.
+- **Week 7:** Phase 5 (CI/CD). Wraps everything in automated quality gates.
 
 When you're stuck, ask me specific questions — "my Spark job OOMs when writing to Postgres, here's the error" is a great question. "How do I do Spark" is not. The learning is in the debugging.
