@@ -252,6 +252,8 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
 3. **Phase 5: CI/CD** — GitHub Actions + GHCR
    - Requires: Phase 4 complete
    - New: Branch protection (dev/prod), PR checks (ruff + dbt parse + compose validate), versioned releases (semantic versioning), image push to GHCR
+   - **Future task (after Phase 5):** Generate 50–100 interview questions covering the full pipeline — architecture decisions, error debugging, tool tradeoffs, production readiness. User must be able to answer all from memory.
+   - **Future task (after Phase 5):** Comprehensive documentation restructuring — reorganize all docs for portfolio readability, consolidate redundant content, ensure consistent formatting across changelog/operations/phases/knowledge. Discuss approach when we get there.
    - Plan added to `chicago-pipeline-plan.md` (sections 5.1–5.6)
 
 - **Phase gates:** Phase 1 COMPLETE. Phase 2 COMPLETE (2.1–2.6 done). Phase 3 locked until ready to start. Phase 4 locked. Phase 5 locked. Do NOT skip ahead.
