@@ -2,7 +2,7 @@ version: 2
 
 models:
   - name: dim_date
-    description: "Date dimension from min to max crime date."
+    description: "Date dimension spanning all fact tables (crime + station reads)."
     columns:
       - name: date_key
         description: "Date (no time) — PK for date dimension"
@@ -14,7 +14,7 @@ models:
           - not_null
           - dbt_expectations.expect_column_values_to_be_between:
               min_value: 2023
-              max_value: 2023
+              max_value: 2026
       - name: month
         tests:
           - not_null
@@ -97,3 +97,51 @@ models:
               max_value: -87.52
               config:
                 where: "longitude IS NOT NULL"
+
+  - name: fact_station_reads
+    description: "Divvy station status fact table. One row per station poll (Kafka message). Analytics-ready for ridership/availability queries."
+    columns:
+      - name: station_id
+        description: "Divvy station ID (text — mixed UUID + numeric). Part of the grain (station + reported_at)."
+        tests:
+          - not_null
+      - name: reported_at
+        description: "When the station last reported its status to GBFS. Part of the grain."
+        tests:
+          - not_null
+      - name: date_key
+        description: "FK to dim_date (date portion of reported_at)."
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_date')
+              field: date_key
+      - name: num_bikes_available
+        description: "Standard bikes available at this station. Non-negative."
+        tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+              max_value: 100
+      - name: num_docks_available
+        description: "Docks available for returns. Non-negative."
+        tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+              max_value: 100
+      - name: is_renting
+        description: "Whether bikes can be rented. Boolean (cast from int 0/1 in Spark)."
+        tests:
+          - not_null
+      - name: is_returning
+        description: "Whether bikes can be returned. Boolean (cast from int 0/1 in Spark)."
+        tests:
+          - not_null
+      - name: total_vehicles_available
+        description: "Derived: bikes + ebikes + scooters available."
+        tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+              max_value: 100

@@ -28,6 +28,7 @@ A running log of changes, errors, and fixes throughout the project. Use this to 
 - [2026-07-15 — Phase 2.2: Kafka + Zookeeper Docker services](#2026-07-15--phase-22-kafka--zookeeper-docker-services)
 - [2026-07-15 — Phase 2.3: Kafka producer](#2026-07-15--phase-23-kafka-producer)
 - [2026-07-15 — Phase 2.4: Spark Structured Streaming](#2026-07-15--phase-24-spark-structured-streaming)
+- [2026-07-16 — Phase 2.5: DBT Stream Models](#2026-07-16--phase-25-dbt-stream-models)
 
 ---
 
@@ -616,3 +617,34 @@ These are not technical errors — they are process mistakes made by the AI assi
 - **foreachBatch is the bridge for streaming-to-JDBC** — JDBC has no native Structured Streaming sink. foreachBatch gives each micro-batch as a static DataFrame, which can use the standard batch JDBC writer. This is the official Spark-recommended pattern.
 - **Stale data filtering matters** — 888 of 2016 stations (44%) had stale `last_reported` timestamps. Without filtering, the warehouse would be polluted with dead-station data. Filter early in the pipeline (Spark), not late (DBT).
 - **AQE doesn't apply to streaming** — `spark.sql.adaptive.enabled` is silently ignored for streaming queries. Don't rely on AQE for streaming partition coalescing.
+
+---
+
+## 2026-07-16 — Phase 2.5: DBT Stream Models
+
+### Changes
+- Created `dbt/models/staging/stg_station_status.sql` — staging view on `raw.station_status`: renames `last_reported`→`reported_at`, `ingest_timestamp`→`ingested_at`, deduplicates on Kafka coordinates (partition + offset)
+- Created `dbt/models/marts/fact_station_reads.sql` — mart table: one row per station poll, with `date_key` FK to `dim_date`, derived `total_vehicles_available` column, filters null station_id/reported_at
+- Modified `dbt/models/marts/dim_date.sql` — now spans both crime (2023) and station read (2026) dates using UNION ALL of min/max from both sources; added `date_bounds` CTE to aggregate across sources
+- Updated `dbt/models/staging/schema.yml` — added `station_status` source, added `stg_station_status` model with tests (not_null, expect_between)
+- Updated `dbt/models/marts/schema.yml` — updated `dim_date` description + year bounds (2023–2026), added `fact_station_reads` model with tests (not_null, expect_between, relationships to dim_date)
+
+### Errors & Fixes
+
+No errors encountered. All 59 DBT tests passed on first run.
+
+### Key Decisions
+
+| Decision | Choice | Why |
+|---|---|---|
+| Dedup key | Kafka partition + offset | Uniquely identifies each Kafka message. Same pattern as crime's `DISTINCT ON (id)` but adapted for streaming data where Kafka coordinates are the natural unique key. |
+| Column renames | `last_reported`→`reported_at`, `ingest_timestamp`→`ingested_at` | Clearer naming: `reported_at` = when the station reported; `ingested_at` = when the pipeline received it. Matches `occurred_at`/`updated_at` pattern from crime staging. |
+| Fact table grain | One row per station poll (Kafka message) | Most granular level — supports any aggregation (per station, per time window, per status). No pre-aggregation to avoid losing detail. |
+| Derived column | `total_vehicles_available` = bikes + ebikes + scooters | Convenience for analytics. `COALESCE` on scooters since it's nullable. |
+| dim_date expansion | UNION ALL of min/max from both sources | Single date dimension serves all fact tables. Without this, `fact_station_reads.date_key` FK test would fail (2026 dates missing from dim_date). |
+| No unique test on station_id | Not unique — multiple polls per station | Unlike `fact_crime_events.crime_id` (unique), station_id repeats across polls. The grain is station + reported_at, not station alone. |
+
+### Lessons
+- **dim_date must span all fact tables** — when adding a second fact table with different date ranges, the date dimension must cover both. Otherwise the FK relationship test fails. Use UNION ALL of min/max from all sources.
+- **Streaming fact tables have different grain than batch** — crime facts are one row per event (unique ID). Station reads are one row per poll (repeating station_id). Don't blindly copy the unique test pattern from batch fact tables.
+- **Deduplication keys differ by source** — crime deduplicates on `id` (business key). Streaming data deduplicates on Kafka coordinates (partition + offset) since those are the system-of-record unique identifiers.

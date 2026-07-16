@@ -21,7 +21,8 @@ A chronological log of operations, files created, and structural changes made to
 - [2026-07-15 — Phase 2.1: Divvy GBFS Data Source Exploration](#2026-07-15--phase-21-divvy-gbfs-data-source-exploration)
 - [2026-07-15 — Phase 2.2: Kafka + Zookeeper Docker Services](#2026-07-15--phase-22-kafka--zookeeper-docker-services)
 - [2026-07-15 — Phase 2.3: Kafka Producer](#2026-07-15--phase-23-kafka-producer)
-
+- [2026-07-15 — Phase 2.4: Spark Structured Streaming](#2026-07-15--phase-24-spark-structured-streaming)
+- [2026-07-16 — Phase 2.5: DBT Stream Models](#2026-07-16--phase-25-dbt-stream-models)
 ---
 
 ## 2026-07-08 — Project Setup & Migration
@@ -635,3 +636,32 @@ Built the Spark Structured Streaming consumer that reads station status messages
 - Continuous mode (both producer + streaming): 5 micro-batches in 5 minutes, ~1,128 rows per batch, 5,640 total rows
 - Row count grew from 1,128 → 5,640 over 150s, confirming continuous pipeline operation
 - Multiple ingest timestamps visible (one per minute per micro-batch)
+
+## 2026-07-16 — Phase 2.5: DBT Stream Models
+
+### What was done
+Created DBT staging and mart models for the Divvy station status streaming data. `stg_station_status` is a staging view on `raw.station_status` that renames columns and deduplicates on Kafka coordinates. `fact_station_reads` is a mart table with one row per station poll, a `date_key` FK to `dim_date`, and a derived `total_vehicles_available` column. Updated `dim_date` to span both crime (2023) and station read (2026) dates. All 59 DBT tests pass.
+
+### Files Created
+- `dbt/models/staging/stg_station_status.sql` — staging view on `raw.station_status`. Renames `last_reported`→`reported_at`, `ingest_timestamp`→`ingested_at`. Deduplicates on `kafka_partition, kafka_offset` (Kafka message uniqueness). Casts all types explicitly.
+- `dbt/models/marts/fact_station_reads.sql` — mart table: one row per station poll. Includes `date_key` (FK to dim_date), `reported_at` (station's self-reported time), `ingested_at` (pipeline receive time), all availability counts, boolean status flags, derived `total_vehicles_available` (bikes + ebikes + scooters with COALESCE on nullable scooters), and Kafka traceability columns. Filters null station_id/reported_at.
+
+### Files Modified
+- `dbt/models/marts/dim_date.sql` — now spans both crime + station dates. Uses UNION ALL of min/max from `stg_crime_events` and `stg_station_status`, then `date_bounds` CTE to get overall min/max. Generates 1,292 rows (2023-01-01 through 2026-07-15).
+- `dbt/models/staging/schema.yml` — added `station_status` to `raw` source (with column documentation), added `stg_station_status` model definition with tests (not_null on station_id/reported_at/is_renting/is_returning, expect_between 0-100 on bikes/docks).
+- `dbt/models/marts/schema.yml` — updated `dim_date` description ("spanning all fact tables") and year test bounds (2023–2026), added `fact_station_reads` model definition with tests (not_null, expect_between, relationships to dim_date).
+
+### Key Design Decisions
+- **Dedup on Kafka coordinates** — partition + offset uniquely identifies each Kafka message; same pattern as crime's `DISTINCT ON (id)` but adapted for streaming
+- **Column renames for clarity** — `last_reported`→`reported_at` (when station reported), `ingest_timestamp`→`ingested_at` (when pipeline received); matches `occurred_at`/`updated_at` pattern from crime staging
+- **Fact grain = one row per station poll** — most granular level, supports any aggregation without pre-aggregation
+- **Derived `total_vehicles_available`** — bikes + ebikes + COALESCE(scooters, 0); convenience column for analytics
+- **dim_date spans all sources** — UNION ALL of min/max from both fact sources ensures FK relationship tests pass for all fact tables
+- **No unique test on station_id** — station_id repeats across polls (unlike crime_id which is unique); grain is station + reported_at
+
+### Verification
+- `dbt build` completed: 1 seed, 5 table models, 2 view models, 51 data tests — all 59 passed (PASS=59 WARN=0 ERROR=0 SKIP=0)
+- `fact_station_reads`: 5,640 rows, 1,128 unique stations, 5 polls per station
+- `dim_date`: 1,292 rows (spanning 2023-01-01 through 2026-07-15)
+- Analytics query verified: "avg bikes available per station" returns correct results (top station: 42.0 avg bikes, 75.0 avg total vehicles)
+- FK relationship test `fact_station_reads.date_key → dim_date.date_key` passes

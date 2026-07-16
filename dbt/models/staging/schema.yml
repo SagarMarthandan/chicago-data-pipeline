@@ -12,6 +12,16 @@ sources:
         # community_area (int), fbi_code, x_coordinate, y_coordinate,
         # year (bigint), updated_on (timestamp), latitude (double),
         # longitude (double)
+      - name: station_status
+        # Spark Structured Streaming writes to raw.station_status (Phase 2.4)
+        # Columns: station_id (text), num_bikes_available (int),
+        # num_bikes_disabled (int), num_docks_available (int),
+        # num_docks_disabled (int), is_installed (bool), is_renting (bool),
+        # is_returning (bool), last_reported (timestamp), legacy_id (text),
+        # num_ebikes_available (int), eightd_has_available_keys (bool),
+        # num_scooters_available (int), num_scooters_unavailable (int),
+        # kafka_partition (int), kafka_offset (bigint),
+        # kafka_timestamp (timestamp), ingest_timestamp (timestamp)
 
 models:
   - name: stg_crime_events
@@ -60,3 +70,37 @@ models:
               max_value: -87.52
               config:
                 where: "longitude IS NOT NULL"
+
+  - name: stg_station_status
+    description: "1:1 with raw.station_status. Renames columns (last_reported→reported_at, ingest_timestamp→ingested_at), casts types, deduplicates on Kafka coordinates."
+    columns:
+      - name: station_id
+        description: "Divvy station ID (mixed UUID + numeric string). Stays text."
+        tests:
+          - not_null
+      - name: reported_at
+        description: "When the station last reported its status to GBFS (timestamp)."
+        tests:
+          - not_null
+      - name: is_renting
+        description: "Whether bikes can be rented at this station. Boolean (cast from int 0/1 in Spark)."
+        tests:
+          - not_null
+      - name: is_returning
+        description: "Whether bikes can be returned at this station. Boolean (cast from int 0/1 in Spark)."
+        tests:
+          - not_null
+      - name: num_bikes_available
+        description: "Number of standard bikes available. Non-negative integer."
+        tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+              max_value: 100
+      - name: num_docks_available
+        description: "Number of docks available for returns. Non-negative integer."
+        tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+              max_value: 100

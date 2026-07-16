@@ -1,6 +1,6 @@
 # Current State — Handoff Document
 
-> **Read this first in a new session.** This file is the handoff: current state, active decisions, and next steps. Last updated: 2026-07-15 (end of session — Phase 2.1–2.4 complete, Phase 2.5 next).
+> **Read this first in a new session.** This file is the handoff: current state, active decisions, and next steps. Last updated: 2026-07-16 (end of session — Phase 2.1–2.5 complete, Phase 2.6 next).
 
 ---
 
@@ -10,7 +10,7 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 
 - **Repo:** `~/chicago-data-pipeline/` (WSL, Ubuntu on Windows 10)
 - **Git:** initialized on `main`, no commits yet (user commits manually)
-- **Phase:** 1 COMPLETE. Phase 2 IN PROGRESS (2.1 GBFS exploration ✅, 2.2 Kafka+Zookeeper ✅, 2.3 Producer ✅, 2.4 Spark Streaming ✅, 2.5 DBT Stream Models NEXT). Phase 3, 4 locked.
+- **Phase:** 1 COMPLETE. Phase 2 IN PROGRESS (2.1 GBFS ✅, 2.2 Kafka+Zookeeper ✅, 2.3 Producer ✅, 2.4 Spark Streaming ✅, 2.5 DBT Stream Models ✅, 2.6 Airflow DAG NEXT). Phase 3, 4 locked.
 - **AI mode:** AI-writes-code (user said "you write it" — explicit mode switch from Socratic)
 
 ## Tech Stack
@@ -42,7 +42,7 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 | kafka | `confluentinc/cp-kafka:7.6.0` | **healthy** — ports 9092 (internal) + 29092 (host) |
 | dbt-build | `python:3.11-slim` + dbt | build-only (never runs, exists for `docker compose build`) |
 
-**Note:** At end of session, postgres + spark-master + spark-worker + zookeeper + kafka are running. `raw.station_status` has 5,640 rows from Phase 2.4 verification. Start all services with `docker compose up -d`.
+**Note:** At end of session, postgres is running. `raw.station_status` has 5,640 rows from Phase 2.4. `mart.fact_station_reads` has 5,640 rows (built by Phase 2.5 dbt build). Start all services with `docker compose up -d`.
 
 ### URLs
 - **Airflow UI:** http://localhost:8080 (admin / admin)
@@ -75,6 +75,9 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 - **Stale station filter at 1 hour** — 888/2016 stations (44%) had stale `last_reported`; filtered in Spark, not DBT
 - **is_* fields cast int→boolean in Spark** — GBFS returns 0/1 integers, not booleans
 - **Kafka metadata columns** (partition, offset, timestamp) stored in `raw.station_status` for traceability
+- **DBT dedup on Kafka coordinates** — `stg_station_status` uses `DISTINCT ON (kafka_partition, kafka_offset)` (streaming equivalent of crime's `DISTINCT ON (id)`)
+- **dim_date spans all fact sources** — UNION ALL of min/max from `stg_crime_events` + `stg_station_status`; 1,292 rows covering 2023 + 2026
+- **fact_station_reads grain = one row per station poll** — station_id is NOT unique (repeats across polls); no unique test on it
 
 ## Phase 1 — COMPLETE (1.1–1.6)
 
@@ -134,13 +137,20 @@ All Phase 1 sub-phases verified end-to-end. Cold start → DAG run → 4 tasks s
   1. Checkpoint mkdir failed — named volume mounted as root, Spark runs as `spark` user → `chown` + Dockerfile fix
   2. AQE warning for streaming — not an error, Spark silently disables AQE for streaming queries
 
+### Phase 2.5 — DBT Stream Models (COMPLETE)
+- `dbt/models/staging/stg_station_status.sql` — staging view on `raw.station_status`: renames `last_reported`→`reported_at`, `ingest_timestamp`→`ingested_at`, deduplicates on Kafka coordinates (partition + offset)
+- `dbt/models/marts/fact_station_reads.sql` — mart table: one row per station poll, with `date_key` FK to `dim_date`, derived `total_vehicles_available` (bikes + ebikes + COALESCE(scooters, 0)), Kafka traceability columns
+- `dbt/models/marts/dim_date.sql` — modified to span both crime (2023) + station (2026) dates via UNION ALL; 1,292 rows
+- Updated `dbt/models/staging/schema.yml` — added `station_status` source + `stg_station_status` model with tests
+- Updated `dbt/models/marts/schema.yml` — updated `dim_date` description + year bounds (2023–2026), added `fact_station_reads` model with tests
+- Verified: `dbt build` → 59/59 tests pass (PASS=59 WARN=0 ERROR=0 SKIP=0); `fact_station_reads` has 5,640 rows, 1,128 unique stations; analytics query ("avg bikes available per station") returns correct results
+- **0 errors hit** — all tests passed on first run
 
 ### Phase 2 Remaining Sub-phases
 
 | Sub-phase | Status | What to build |
 |---|---|---|
-| 2.5 DBT models for stream | **NEXT** | `stg_station_status` (staging view) + `fact_station_reads` (one row per station poll) |
-| 2.6 Airflow DAG for stream | Not started | `divvy_stream_dag.py` — starts/monitors producer + streaming job |
+| 2.6 Airflow DAG for stream | **NEXT** | `divvy_stream_dag.py` — starts/monitors producer + streaming job |
 
 ## Files Created (full repo structure)
 
@@ -163,10 +173,10 @@ All Phase 1 sub-phases verified end-to-end. Cold start → DAG run → 4 tasks s
 │   ├── Dockerfile            ← apache/spark:3.5.1 + PostgreSQL JDBC + Kafka connector (4 JARs)
 │   └── jobs/
 │       ├── crime_batch.py
-│       └── divvy_stream.py   ← NEW (Phase 2.4) — Structured Streaming consumer
+│       └── divvy_stream.py   ← Phase 2.4 — Structured Streaming consumer
 ├── ingestion/
 │   └── download_crime.py
-├── kafka/                    ← NEW (Phase 2.3)
+├── kafka/                    ← Phase 2.3
 │   └── producers/
 │       └── divvy_producer.py ← GBFS → Kafka producer
 ├── dbt/
@@ -175,6 +185,17 @@ All Phase 1 sub-phases verified end-to-end. Cold start → DAG run → 4 tasks s
 │   ├── profiles.yml
 │   ├── macros/
 │   ├── models/
+│   │   ├── staging/
+│   │   │   ├── stg_crime_events.sql
+│   │   │   ├── stg_station_status.sql  ← NEW (Phase 2.5)
+│   │   │   └── schema.yml
+│   │   └── marts/
+│   │       ├── dim_date.sql             ← MODIFIED (Phase 2.5 — spans both sources)
+│   │       ├── dim_community_area.sql
+│   │       ├── dim_crime_type.sql
+│   │       ├── fact_crime_events.sql
+│   │       ├── fact_station_reads.sql   ← NEW (Phase 2.5)
+│   │       └── schema.yml
 │   ├── packages.yml
 │   └── seeds/community_areas.csv
 ├── data/
@@ -192,30 +213,28 @@ All Phase 1 sub-phases verified end-to-end. Cold start → DAG run → 4 tasks s
     │   ├── data-sources.md   ← expanded with full GBFS schema (Phase 2.1)
     │   └── mermaid-syntax.md
     ├── learning-protocol.md
-    ├── operations-performed.md ← TOC + entries through Phase 2.4
+    ├── operations-performed.md ← TOC + entries through Phase 2.5
     ├── phases/
-    │   ├── README.md         ← index updated through Phase 2.4
+    │   ├── README.md         ← index updated through Phase 2.5
     │   ├── phase-1.1-docker.md through phase-1.6-verification.md
     │   ├── phase-2.1-gbfs-data-source.md
     │   ├── phase-2.2-kafka.md
     │   ├── phase-2.3-divvy-producer.md
-    │   └── phase-2.4-spark-streaming.md  ← NEW (Phase 2.4)
+    │   ├── phase-2.4-spark-streaming.md
+    │   └── phase-2.5-dbt-stream-models.md  ← NEW (Phase 2.5)
     └── conventions/
         ├── airflow.md, dbt.md, docker.md, spark.md
 ```
 
 ## Next Steps
 
-1. **Phase 2.5: DBT models for stream** — `stg_station_status` + `fact_station_reads`
-   - `stg_station_status`: staging view on `raw.station_status` — light cleaning, renaming, type casting
-   - `fact_station_reads`: one row per station poll — analytics-ready fact table
-   - Will enable querying "avg bikes available at station X over last hour"
-   - Requires: `raw.station_status` table (Phase 2.4 provides this, 5,640 rows currently)
-2. **Phase 2.6: Airflow DAG** — `divvy_stream_dag.py` (start/monitor producer + streaming)
-3. **Phase 2 gate:** Done when `docker compose up` includes Kafka, producer running, Spark streaming writes to Postgres, DBT builds `fact_station_reads`, can query "avg bikes available at station X over last hour"
+1. **Phase 2.6: Airflow DAG** — `divvy_stream_dag.py` (start/monitor producer + streaming)
+   - Will orchestrate: start Kafka producer → start Spark Structured Streaming → monitor → run DBT build
+   - Completes the Phase 2 gate: full end-to-end `docker compose up` → Kafka → Spark streaming → Postgres → DBT → queryable marts
+2. **Phase 2 gate:** Done when `docker compose up` includes Kafka, producer running, Spark streaming writes to Postgres, DBT builds `fact_station_reads`, can query "avg bikes available at station X over last hour"
 
 ## Active Constraints
-- **Phase gates:** Phase 1 COMPLETE. Phase 2 in progress (2.1–2.4 done, 2.5 next). Phase 3 locked until Phase 2 works. Do NOT skip ahead.
+- **Phase gates:** Phase 1 COMPLETE. Phase 2 in progress (2.1–2.5 done, 2.6 next). Phase 3 locked until Phase 2 works. Do NOT skip ahead.
 - **Learning protocol:** Socratic by default. User must say "write the code" to get code. Currently in AI-writes-code mode.
 - **Three-doc system:** `changelog.md` (errors), `docs/knowledge/` (reference, one file per topic), `docs/operations-performed.md` (audit trail). Update all three after every change.
 - **Phase-completion docs:** After each sub-phase is verified, create `docs/phases/phase-X.Y-<name>.md` from `TEMPLATE.md`. Include one high-level mermaid diagram + pointer to `docs/knowledge/architecture.md` for details.
@@ -251,6 +270,7 @@ All Phase 1 sub-phases verified end-to-end. Cold start → DAG run → 4 tasks s
 - **DBT run location:** Must run from inside `dbt/` directory.
 - **kafka-python 3.0.x API change:** `NoBrokersAvailable` removed. Use `KafkaError` (base class) for catch-all.
 - **`KAFKA_NUM_PARTITIONS` env var doesn't work** with Confluent images. Create topics explicitly for custom partition counts.
+- **Container name is `chicago-data-pipeline-postgres-1`** not `postgres` — use `docker compose exec postgres` or the full container name.
 
 ## Chat History Chunks
 
@@ -273,5 +293,3 @@ All Phase 1 sub-phases verified end-to-end. Cold start → DAG run → 4 tasks s
 | `2026-07-15/02-phase-2.2-kafka.md` | Kafka + Zookeeper Docker services, Confluent images, single-broker overrides |
 | `2026-07-15/03-phase-2.3-producer-and-docs.md` | Divvy producer implementation, kafka.md conceptual rewrite with mermaid diagrams |
 | `2026-07-15/04-phase-2.4-spark-streaming.md` | Spark Structured Streaming: Kafka connector JARs, divvy_stream.py, foreachBatch→JDBC, checkpoint volume |
-
-

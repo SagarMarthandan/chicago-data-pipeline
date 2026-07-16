@@ -1,11 +1,11 @@
 -- ============================================================
--- dim_date — date dimension from min to max crime date
+-- dim_date — date dimension spanning all fact tables
 -- ============================================================
 -- Generates a row for every date between the earliest and latest
--- crime occurrence. This is a standard date dimension for joining
--- facts to date attributes (year, month, day of week, etc.).
+-- dates across ALL fact sources (crime events + station reads).
+-- This ensures date_key FKs from any fact table resolve here.
 --
--- Source: {{ ref('stg_crime_events') }}
+-- Sources: {{ ref('stg_crime_events') }} + {{ ref('stg_station_status') }}
 -- Output: mart.dim_date (table)
 -- ============================================================
 
@@ -14,11 +14,23 @@ WITH date_range AS (
         MIN(occurred_at::date) AS min_date,
         MAX(occurred_at::date) AS max_date
     FROM {{ ref('stg_crime_events') }}
+
+    UNION ALL
+
+    SELECT
+        MIN(reported_at::date) AS min_date,
+        MAX(reported_at::date) AS max_date
+    FROM {{ ref('stg_station_status') }}
+),
+
+date_bounds AS (
+    SELECT MIN(min_date) AS min_date, MAX(max_date) AS max_date
+    FROM date_range
 ),
 
 date_series AS (
     SELECT generate_series(min_date, max_date, interval '1 day')::date AS date_key
-    FROM date_range
+    FROM date_bounds
 )
 
 SELECT
