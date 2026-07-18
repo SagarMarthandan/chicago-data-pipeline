@@ -57,3 +57,4 @@ chat-history/current-state.md       ← handoff for the NEXT session
 | `phase-2.4-spark-streaming.md` | Spark Structured Streaming (Kafka → Postgres) | Complete |
 | `phase-2.5-dbt-stream-models.md` | DBT models for stream (stg_station_status + fact_station_reads) | Complete |
 | `phase-2.6-airflow-stream-dag.md` | Airflow DAG for stream (start/monitor producer + streaming) | Complete |
+| `phase-3.1-grafana.md` | Grafana service + datasources + dashboards | Complete |

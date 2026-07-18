@@ -1,0 +1,70 @@
+# ============================================================
+# Grafana datasource provisioning — Postgres (chicago_analytics)
+# ============================================================
+# Auto-creates the Postgres datasource on Grafana startup.
+# No manual UI config needed — this file is the source of truth.
+#
+# Grafana interpolates $ENV_VAR / ${ENV_VAR} from the container
+# environment (docker-compose.yml passes POSTGRES_USER/PASSWORD
+# through). NOTE: Grafana uses shell-style $VAR, NOT Go templates
+# {{.VAR}} — the latter causes "cannot unmarshal !!map into string"
+# at provisioning time.
+#
+# The uid "chicago-analytics" is what dashboard panels reference
+# via the "datasource.uid" field in their JSON.
+# ============================================================
+
+apiVersion: 1
+
+datasources:
+  - name: Chicago Analytics
+    uid: chicago-analytics
+    type: postgres
+    access: proxy
+    # Host is the Docker service name — Grafana talks to Postgres
+    # over the Docker network, not localhost.
+    url: postgres:5432
+    database: chicago_analytics
+    user: $POSTGRES_USER
+    # Secure password via env var interpolation (not hardcoded).
+    secureJsonData:
+      password: $POSTGRES_PASSWORD
+    jsonData:
+      # Postgres connection options
+      sslmode: disable
+      # Database name — Grafana 12.4's Postgres plugin reads the database
+      # name from jsonData.database, NOT the top-level `database:` field.
+      # The top-level field is for older Grafana versions; both are set
+      # for compatibility. Without this, the plugin errors at query time:
+      # "You do not currently have a default database configured."
+      database: chicago_analytics
+      # Grafana treats every query as a read-only transaction by default.
+      # TimescaleDB is disabled — we use plain Postgres.
+      postgresVersion: 1600
+      # Show the database field in the query editor (lets users switch
+      # to airflow_metadata if they want to explore Airflow's tables).
+      showDatabase: true
+    # Make this the default datasource so new panels use it automatically.
+    isDefault: true
+    editable: true
+
+  # Second datasource — Airflow's metadata database.
+  # Airflow stores DAG runs, task instances, etc. in a SEPARATE database
+  # (airflow_metadata), not a schema in chicago_analytics. Postgres cannot
+  # query across databases without postgres_fdw, so we provision a second
+  # datasource. Airflow-related panels reference uid "airflow-metadata".
+  - name: Airflow Metadata
+    uid: airflow-metadata
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    database: airflow_metadata
+    user: $AIRFLOW_DB_USER
+    secureJsonData:
+      password: $AIRFLOW_DB_PASSWORD
+    jsonData:
+      sslmode: disable
+      database: airflow_metadata
+      postgresVersion: 1600
+    isDefault: false
+    editable: true

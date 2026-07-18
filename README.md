@@ -131,6 +131,14 @@ graph LR
 
 See `docs/phases/` for phase-completion documents with architecture diagrams, errors hit, and verification.
 
+### Phase 3 — Observability
+
+| Sub-Phase | Status | What was built |
+|---|---|---|
+| **3.1 Grafana** | **Complete** | `grafana/grafana:12.4.0` service (port 3000, anonymous Viewer). Two Postgres datasources provisioned via YAML (`chicago-analytics` + `airflow-metadata`). Two dashboards provisioned via JSON: Pipeline Health (10 panels — row counts, stream freshness, Airflow DAG runs) + Crime + Divvy Analysis (6 panels — top crime areas, crime types, station availability heatmap, crime-vs-ridership proxy). All 16 panel queries verified against live data. 4 errors hit: Go-template env var syntax, env vars not in container after restart, cross-database query failure, `jsonData.database` missing (browser panels showed "No data"). |
+
+**Phase 3: IN PROGRESS.** 3.1 Grafana done. 3.2 DBT tests next. See `docs/phases/phase-3.1-grafana.md`.
+
 ## Phased Build
 
 1. **Batch foundation** — Postgres + Spark batch + DBT marts + Airflow DAG
@@ -153,7 +161,7 @@ chicago-data-pipeline/
 ├── README.md                 # this file
 ├── changelog.md              # errors, fixes, lessons (read before working)
 ├── chicago-pipeline-plan.md  # full phased design
-├── docker-compose.yml        # 10 services: Postgres, Spark, Airflow, Kafka, Zookeeper + spark_checkpoints volume
+├── docker-compose.yml        # 11 services: Postgres, Spark, Airflow, Kafka, Zookeeper, Grafana + spark_checkpoints + grafana_data volumes
 ├── init.sql                  # Postgres init: 3 schemas + airflow DB
 ├── pyproject.toml            # uv project mode (host Python)
 ├── uv.lock                   # reproducible installs
@@ -176,6 +184,13 @@ chicago-data-pipeline/
 ├── kafka/                    # Phase 2.3
 │   └── producers/
 │       └── divvy_producer.py # GBFS → Kafka producer (--once mode for Airflow)
+├── grafana/                  # Phase 3.1 — observability dashboards
+│   ├── provisioning/
+│   │   ├── datasources/postgres.yml  # 2 Postgres datasources (chicago-analytics + airflow-metadata)
+│   │   └── dashboards/dashboards.yml # dashboard provider (scans every 30s)
+│   └── dashboards/
+│       ├── pipeline_health.json      # 10-panel pipeline health dashboard
+│       └── crime_divvy_analysis.json # 6-panel crime + Divvy analysis dashboard
 ├── dbt/                      # DBT transformation project
 │   ├── Dockerfile             # separate dbt image (protobuf conflict with Airflow 3.0)
 │   ├── dbt_project.yml       # model config, materialization, schema mapping
@@ -259,6 +274,7 @@ docker compose ps -a
 | Spark Worker UI | http://localhost:8081 | — |
 | Postgres | localhost:5432 | chicago / (from .env) |
 | Kafka (host) | localhost:29092 | — |
+| Grafana UI | http://localhost:3000 | admin / admin (anonymous Viewer enabled) |
 
 ### Host Python (for dev scripts)
 
@@ -277,7 +293,7 @@ docker compose down -v                     # stop + WIPE all data
 ```
 ### Running the pipeline (via Airflow)
 
-**Important:** On a cold start, run `crime_batch` first, then `divvy_stream`. The `dim_date` model depends on both raw tables. crime_batch's `dbt_build` fails on `stg_station_status` (expected, non-blocking) — all crime models build fine. Then divvy_stream's `dbt_build` succeeds because both raw tables exist.
+**Important:** On a cold start, run `divvy_stream` **first**, then `crime_batch`. The `crime_batch` DAG's `dbt_build` task runs `dbt build` which builds **ALL** models, including `stg_station_status` (the stream staging model) which depends on `raw.station_status`. That table is created by the `divvy_stream` DAG. If `divvy_stream` hasn't run yet, `crime_batch`'s `dbt_build` fails on try 1 (succeeds on retry after `divvy_stream` completes — a race condition). Running `divvy_stream` first eliminates the race: `raw.station_status` exists before `crime_batch`'s `dbt_build` runs.
 
 ```bash
 # 1. Start all services
@@ -286,19 +302,19 @@ docker compose up -d
 # 2. Wait for services to be healthy (~90s)
 docker compose ps -a
 
-# 3. Trigger crime_batch DAG first (batch pipeline)
-docker exec chicago-data-pipeline-airflow-scheduler-1 airflow dags trigger crime_batch
-
-# 4. Wait for it to finish, then trigger divvy_stream DAG (streaming pipeline)
+# 3. Trigger divvy_stream DAG FIRST (streaming pipeline creates raw.station_status)
 docker exec chicago-data-pipeline-airflow-scheduler-1 airflow dags trigger divvy_stream
+
+# 4. Wait for it to finish, then trigger crime_batch DAG (batch pipeline)
+docker exec chicago-data-pipeline-airflow-scheduler-1 airflow dags trigger crime_batch
 
 # 5. Query marts
 docker compose exec postgres psql -U chicago -d chicago_analytics -c "SELECT COUNT(*) FROM mart.fact_crime_events;"
 docker compose exec postgres psql -U chicago -d chicago_analytics -c "SELECT COUNT(*) FROM mart.fact_station_reads;"
 ```
 
-The crime_batch DAG runs 4 tasks: download_crime → clear_dbt_schemas → spark_crime_batch → dbt_build (~163s total).
 The divvy_stream DAG runs 7 tasks: create_topic → start_producer → start_stream → wait_for_data → dbt_build → stop_stream → stop_producer (~60s total).
+The crime_batch DAG runs 4 tasks: download_crime → clear_dbt_schemas → spark_crime_batch → dbt_build (~163s total).
 
 ### Running pipeline steps manually (for debugging)
 

@@ -1,6 +1,6 @@
 # Current State — Handoff Document
 
-> **Read this first in a new session.** This file is the handoff: current state, active decisions, and next steps. Last updated: 2026-07-16 (end of session — Phase 2 COMPLETE, Phase 5 plan added, Phase 3 next).
+> **Read this first in a new session.** This file is the handoff: current state, active decisions, and next steps. Last updated: 2026-07-18 (end of session — Phase 3.1 Grafana COMPLETE, Phase 3.2 DBT tests NEXT).
 
 ---
 
@@ -10,7 +10,7 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 
 - **Repo:** `~/chicago-data-pipeline/` (WSL, Ubuntu on Windows 10)
 - **Git:** initialized on `main`, no commits yet (user commits manually)
-- **Phase:** 1 COMPLETE. Phase 2 COMPLETE (2.1 GBFS ✅, 2.2 Kafka+Zookeeper ✅, 2.3 Producer ✅, 2.4 Spark Streaming ✅, 2.5 DBT Stream Models ✅, 2.6 Airflow DAG ✅). Phase 3 NEXT (locked until ready). Phase 4 locked. Phase 5 locked (plan written in chicago-pipeline-plan.md).
+- **Phase:** 1 COMPLETE. Phase 2 COMPLETE (2.1–2.6). Phase 3 STARTED (3.1 Grafana ✅, 3.2 DBT tests NEXT, 3.3 Airflow SLAs LOCKED, 3.4 Verification LOCKED). Phase 4 locked. Phase 5 locked (plan written in chicago-pipeline-plan.md).
 - **AI mode:** AI-writes-code (user said "you write it" — explicit mode switch from Socratic)
 
 ## Tech Stack
@@ -22,13 +22,13 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 | Streaming | Kafka + Spark Structured Streaming | 2 ✅ |
 | Transformation | DBT | 1+ ✅ |
 | Orchestration | Airflow | 1+ ✅ |
-| Observability | Grafana | 3 (locked) |
+| Observability | Grafana | 3.1 ✅ (3.2–3.4 in progress) |
 | Cloud | Terraform + Airbyte | 4 (locked) |
 | CI/CD | GitHub Actions + GHCR | 5 (locked) |
 
 ## Current Infrastructure
 
-### Docker Compose — 10 services (7 Phase 1 + 2 Phase 2 + 1 build-only)
+### Docker Compose — 11 services (7 Phase 1 + 2 Phase 2 + 1 Phase 3 + 1 build-only)
 
 | Service | Image | Status |
 |---|---|---|
@@ -42,6 +42,7 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 | zookeeper | `confluentinc/cp-zookeeper:7.6.0` | **healthy** — port 2181 (internal) |
 | kafka | `confluentinc/cp-kafka:7.6.0` | **healthy** — ports 9092 (internal) + 29092 (host) |
 | dbt-build | `python:3.11-slim` + dbt | build-only (never runs, exists for `docker compose build`) |
+| grafana | `grafana/grafana:12.4.0` | **healthy** — UI on port 3000 (admin/admin), 2 datasources (chicago-analytics + airflow-metadata), 2 dashboards (Pipeline Health + Crime + Divvy Analysis) |
 
 **Note:** At end of session, all services running. `raw.crime_events` has 263,395 rows. `raw.station_status` has 2,001 rows (from divvy_stream DAG run). `mart.fact_station_reads` has 2,001 rows, 1,125 unique stations. `mart.fact_crime_events` has 263,395 rows. Start all services with `docker compose up -d`.
 
@@ -52,6 +53,7 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 - **Postgres:** localhost:5432 (user: chicago, db: chicago_analytics)
 - **Kafka (host):** localhost:29092
 - **Kafka (Docker network):** kafka:9092
+- **Grafana UI:** http://localhost:3000 (admin / admin) — anonymous Viewer access enabled
 
 ### Key Architecture Decisions (Phase 1 + Phase 2)
 - **3 Postgres schemas:** `raw`, `staging`, `mart` (no `intermediate`)
@@ -164,6 +166,21 @@ All Phase 1 sub-phases verified end-to-end. Cold start → DAG run → 4 tasks s
 ### Phase 2 Gate — MET
 Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming → Postgres → DBT → queryable marts. Analytics query "avg bikes available per station" returns correct results.
 
+## Phase 3 — IN PROGRESS (3.1 done, 3.2 next)
+
+### Phase 3.1 — Grafana (COMPLETE)
+- Added `grafana` service to `docker-compose.yml` (`grafana/grafana:12.4.0`, port 3000, `grafana_data` volume, anonymous Viewer access)
+- Two Postgres datasources provisioned via `grafana/provisioning/datasources/postgres.yml`:
+  - `chicago-analytics` (uid: `chicago-analytics`) → `chicago_analytics` database (raw + mart schemas)
+  - `airflow-metadata` (uid: `airflow-metadata`) → `airflow_metadata` database (dag_run, task_instance)
+  - **Why two:** Postgres databases are isolated — can't cross-query without `postgres_fdw`. One datasource per DB.
+- Two dashboards provisioned via `grafana/provisioning/dashboards/dashboards.yml`:
+  - `pipeline_health.json` (10 panels): row counts, stream ingestion rate, stream freshness, latest Kafka msg, DBT tests (static placeholder), Airflow DAG runs + task instances
+  - `crime_divvy_analysis.json` (6 panels): top community areas by crime, crime types, avg vehicles per station, station availability heatmap, crime-vs-ridership proxy (THE DRIVING QUESTION), crime heatmap
+- **4 errors hit:** (1) Go-template `{{.VAR}}` syntax in datasource YAML → Grafana uses `$VAR`; (2) env vars not in container after `restart` → need `up -d` to recreate; (3) cross-database query failed → added second datasource; (4) `jsonData.database` missing → browser panels showed "No data" despite API queries working (Grafana 12.4's Postgres plugin reads DB name from `jsonData.database`, not top-level `database:` field)
+- **DAG run order: stream first, then crime batch** — `crime_batch`'s `dbt_build` builds ALL models including `stg_station_status` (depends on `raw.station_status` from `divvy_stream`). Run `divvy_stream` first to eliminate the race condition. Pre-existing design issue to address in Phase 3.3.
+- Verified: Grafana healthy (v12.4.0), both datasources + dashboards loaded, all 16 panel queries return status 200 against live data (263,401 crime rows, 1,130 station reads, Airflow DAG runs). Browser rendering verified (not just API).
+
 ## Files Created (full repo structure)
 
 ```
@@ -173,7 +190,7 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
 ├── .vscode/settings.json
 ├── AGENTS.md
 ├── README.md
-├── docker-compose.yml        ← 10 services + spark_checkpoints volume (Phase 1 + Phase 2), YAML anchors
+├── docker-compose.yml        ← 11 services + spark_checkpoints + grafana_data volumes (Phase 1 + 2 + 3.1), YAML anchors
 ├── airflow/
 │   ├── Dockerfile
 │   ├── passwords.json
@@ -190,6 +207,13 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
 │       └── divvy_stream.py   ← Phase 2.4 — Structured Streaming consumer
 ├── ingestion/
 │   └── download_crime.py
+├── grafana/                   ← Phase 3.1
+│   ├── provisioning/
+│   │   ├── datasources/postgres.yml  ← 2 datasources (chicago-analytics + airflow-metadata)
+│   │   └── dashboards/dashboards.yml ← dashboard provider
+│   └── dashboards/
+│       ├── pipeline_health.json      ← 10-panel pipeline health dashboard
+│       └── crime_divvy_analysis.json ← 6-panel analysis dashboard
 ├── kafka/                    ← Phase 2.3
 │   └── producers/
 │       └── divvy_producer.py ← GBFS → Kafka producer
@@ -218,7 +242,8 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
 │   └── current-state.md      ← THIS FILE
 └── docs/
     ├── knowledge/
-    │   ├── index.md
+    │   ├── data-sources.md   ← expanded with full GBFS schema (Phase 2.1)
+    │   ├── grafana.md        ← Phase 3.1 — comprehensive reference: concepts, provisioning, env var gotchas, jsonData.database deep dive, DAG run order, 10 common mistakes, 8 mermaid diagrams
     │   ├── wsl.md, uv.md, docker-compose.md, postgres.md, dbt.md, spark.md
     │   ├── architecture.md   ← 10 sections (now includes Kafka + Zookeeper + Spark Streaming)
     │   ├── kafka.md          ← full concepts + 8 mermaid diagrams + Spark consumer + checkpointing
@@ -229,7 +254,8 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
     ├── learning-protocol.md
     ├── operations-performed.md ← TOC + entries through Phase 2.6
     ├── phases/
-    │   ├── README.md         ← index updated through Phase 2.6
+    │   └── phase-2.6-airflow-stream-dag.md  ← NEW (Phase 2.6)
+    │   └── phase-3.1-grafana.md             ← NEW (Phase 3.1)
     │   ├── phase-1.1-docker.md through phase-1.6-verification.md
     │   ├── phase-2.1-gbfs-data-source.md
     │   ├── phase-2.2-kafka.md
@@ -244,8 +270,11 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
 ## Next Steps
 
 1. **Phase 3: Observability** — Grafana dashboards + DBT tests + Airflow SLAs
-   - Requires: Phase 2 complete (streaming pipeline works end-to-end)
-   - New: Grafana dashboards for pipeline health, DBT tests for data quality, Airflow SLAs for task timing
+   - **3.1 Grafana: COMPLETE** ✅ — grafana service + 2 datasources + 2 dashboards (Pipeline Health + Crime + Divvy Analysis). All 16 panel queries verified against live data.
+   - **3.2 DBT tests: NEXT** — Add custom singular test `assert_crime_in_chicago_bounds.sql` + stream not_null tests. Wire the DBT tests Grafana panel to actual test results (currently static placeholder).
+   - **3.3 Airflow robustness: LOCKED** — Add retries, SLAs, freshness sensor, on_failure_callback.
+   - **3.4 Verification: LOCKED** — Break the pipeline and confirm observability catches it.
+   - Requires: Phase 2 complete (streaming pipeline works end-to-end) ✅ met
 2. **Phase 4: Cloud** — Terraform → BigQuery + Airbyte
    - Requires: Phase 3 complete (observability in place before migrating to cloud)
    - New: Terraform infrastructure, BigQuery warehouse, Airbyte ingestion
@@ -256,7 +285,7 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
    - **Future task (after Phase 5):** Comprehensive documentation restructuring — reorganize all docs for portfolio readability, consolidate redundant content, ensure consistent formatting across changelog/operations/phases/knowledge. Discuss approach when we get there.
    - Plan added to `chicago-pipeline-plan.md` (sections 5.1–5.6)
 
-- **Phase gates:** Phase 1 COMPLETE. Phase 2 COMPLETE (2.1–2.6 done). Phase 3 locked until ready to start. Phase 4 locked. Phase 5 locked. Do NOT skip ahead.
+- **Phase gates:** Phase 1 COMPLETE. Phase 2 COMPLETE (2.1–2.6 done). Phase 3 IN PROGRESS (3.1 Grafana done, 3.2 DBT tests next). Phase 4 locked. Phase 5 locked. Do NOT skip ahead.
 - **Learning protocol:** Socratic by default. User must say "write the code" to get code. Currently in AI-writes-code mode.
 - **Three-doc system:** `changelog.md` (errors), `docs/knowledge/` (reference, one file per topic), `docs/operations-performed.md` (audit trail). Update all three after every change.
 - **Phase-completion docs:** After each sub-phase is verified, create `docs/phases/phase-X.Y-<name>.md` from `TEMPLATE.md`. Include one high-level mermaid diagram + pointer to `docs/knowledge/architecture.md` for details.

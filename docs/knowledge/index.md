@@ -18,6 +18,7 @@ Reference material, useful commands, and explanations accumulated throughout the
 | [git.md](git.md) | Git | Useful commands |
 | [data-sources.md](data-sources.md) | Data Sources | Chicago Crime Socrata API reference, Divvy GBFS API reference |
 | [mermaid-syntax.md](mermaid-syntax.md) | Mermaid Syntax | Quoting rules for special characters, scanner script |
+| [grafana.md](grafana.md) | Grafana | Core concepts (datasource, dashboard, panel, query, provisioning), our setup, file-based provisioning, env var interpolation gotcha (`$VAR` not `{{.VAR}}`), `jsonData.database` deep dive (browser vs API code paths), two-datasource pattern for separate Postgres databases, dashboard inventory, DAG run order (stream first), useful commands, 10 common mistakes, 8 mermaid diagrams |
 
 ## How to Use
 

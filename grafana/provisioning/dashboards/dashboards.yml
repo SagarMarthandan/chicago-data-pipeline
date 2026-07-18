@@ -1,0 +1,26 @@
+# ============================================================
+# Grafana dashboard provider provisioning
+# ============================================================
+# Tells Grafana where to find dashboard JSON files on disk.
+# Grafana scans the path on startup + periodically, and auto-imports
+# any *.json files it finds. Dashboards loaded this way are
+# read-only in the UI (managed by this file, not the UI editor).
+#
+# To edit a dashboard: edit the JSON in ./grafana/dashboards/,
+# then restart Grafana (or wait for the scan interval).
+# ============================================================
+
+apiVersion: 1
+
+providers:
+  - name: Chicago Pipeline Dashboards
+    orgId: 1
+    # Path inside the container — matches the bind mount in docker-compose:
+    #   ./grafana/dashboards:/var/lib/grafana/dashboards
+    folder: Chicago Pipeline
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

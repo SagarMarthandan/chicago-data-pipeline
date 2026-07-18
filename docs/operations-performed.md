@@ -698,3 +698,60 @@ Created DBT staging and mart models for the Divvy station status streaming data.
 - Analytics query: avg 5.55 bikes, 2.37 ebikes per station read
 - DBT build: all tests pass (streaming + crime models)
 - **Phase 2 gate met**: full end-to-end `docker compose up` → Kafka → producer → Spark streaming → Postgres → DBT → queryable marts
+---
+
+## 2026-07-18 — Phase 3.1: Grafana
+
+### Why
+Phase 3 (Observability) requires Grafana dashboards for pipeline health and analysis. Phase 3.1 is the Grafana foundation — service, datasources, dashboards. DBT tests (3.2) and Airflow SLAs (3.3) will feed metrics into these dashboards.
+
+### Files Created
+- `grafana/provisioning/datasources/postgres.yml` — provisions two Postgres datasources: `chicago-analytics` (uid: `chicago-analytics`, database: `chicago_analytics`) + `airflow-metadata` (uid: `airflow-metadata`, database: `airflow_metadata`). Uses shell-style `$VAR` env interpolation (NOT Go templates).
+- `grafana/provisioning/dashboards/dashboards.yml` — dashboard provider scanning `/var/lib/grafana/dashboards/` every 30s, loading into "Chicago Pipeline" folder.
+- `grafana/dashboards/pipeline_health.json` — 10-panel pipeline health dashboard (uid: `pipeline-health`):
+  - 4 stat panels: row counts for raw.crime_events, mart.fact_crime_events, raw.station_status, mart.fact_station_reads
+  - 1 time series: stream ingestion rate (rows/hour)
+  - 2 stat panels: stream freshness (seconds since last ingest), latest Kafka message timestamp
+  - 1 stat panel: DBT tests passing (static placeholder — wired in Phase 3.2)
+  - 1 pie chart: Airflow DAG runs (last 7 days, from airflow-metadata datasource)
+  - 1 table: recent Airflow task instances (last 2 days, from airflow-metadata datasource)
+- `grafana/dashboards/crime_divvy_analysis.json` — 6-panel analysis dashboard (uid: `crime-divvy-analysis`):
+  - 1 bar chart: top 15 community areas by crime count
+  - 1 pie chart: top 10 crime types
+  - 1 time series: avg vehicles available per station (hourly)
+  - 1 heatmap: station availability (top 20 stations × hour of day)
+  - 1 time series: crime vs Divvy ridership proxy (monthly) — THE DRIVING QUESTION
+  - 1 heatmap: crime by day of week × hour of day
+- `docs/knowledge/grafana.md` — comprehensive Grafana reference: core concepts (datasource, dashboard, panel, query, provisioning), our setup, file-based provisioning, env var interpolation gotcha, `jsonData.database` deep dive (browser vs API code paths), two-datasource pattern, dashboard inventory, DAG run order (stream first), useful commands, 10 common mistakes, 8 mermaid diagrams
+- `docs/phases/phase-3.1-grafana.md` — phase completion doc (4 errors, architecture diagram, verification)
+
+### Files Modified
+- `docker-compose.yml` — added `grafana` service (image `grafana/grafana:12.4.0`, port 3000, `grafana_data` named volume, healthcheck on `/api/health`, anonymous Viewer access, env vars for Postgres + Airflow DB creds). Added `grafana_data` to volumes section.
+- `.env.example` — added `GRAFANA_ADMIN_USER=admin` + `GRAFANA_ADMIN_PASSWORD=admin` section
+- `.env` — appended Grafana admin creds
+- `docs/knowledge/index.md` — updated grafana.md entry with expanded description
+- `docs/phases/README.md` — added phase-3.1-grafana.md to index
+- `README.md` — added Grafana to services table, URLs table, project structure, Phase 3.1 progress section, corrected DAG run order (stream first, then crime batch)
+- `grafana/provisioning/datasources/postgres.yml` — added `database:` field inside `jsonData:` block for both datasources (fix for error #4 — browser panels showed "No data")
+
+### Key Design Decisions
+
+| Decision | Choice | Why |
+|---|---|---|
+| Grafana version | 12.4.0 (not 13.1.0) | 13.1.0 released 2026-06-23 — 25 days old. 12.4.0 is production-hardened. Matches "stable versions only" rule. |
+| Image | `grafana/grafana` (not `grafana-oss`) | `grafana-oss` repo deprecated since 12.4.0. `grafana/grafana` includes Enterprise features, free to use. |
+| Two datasources | One per Postgres database | Postgres can't cross-query databases without `postgres_fdw`. Simpler to provision two datasources than set up FDW. |
+| File-based provisioning | YAML + JSON, no UI config | Version-controlled, reproducible, no manual UI steps. |
+| Anonymous Viewer access | Enabled for local dev | Dashboards viewable without login. Set `GF_AUTH_ANONYMOUS_ENABLED=false` in shared env. |
+| DBT tests panel (static) | Placeholder `SELECT 59` | Real DBT test results need artifact parsing — wired in Phase 3.2. |
+| Crime-vs-ridership is a proxy | System-wide avg bikes, not per-area | GBFS doesn't include `community_area_id` on stations. Real join needs geospatial matching, deferred to Phase 4+. |
+
+### Verification
+- Grafana healthy: version 12.4.0, database ok
+- Both datasources provisioned: Chicago Analytics + Airflow Metadata
+- Both dashboards loaded: Pipeline Health (10 panels) + Crime + Divvy Analysis (6 panels)
+- All 16 panel queries verified against live data (status 200)
+- Live data confirmed: 263,401 crime rows, 1,130 station reads, Airflow DAG runs (both DAGs succeeded)
+- Browser rendering verified (not just API): panels display live data after `jsonData.database` fix
+- DAG run order confirmed: stream first (divvy_stream), then crime batch — eliminates dbt_build race condition
+- Top community area by crime: Austin (12,700) — correct

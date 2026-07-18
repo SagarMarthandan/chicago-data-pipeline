@@ -673,3 +673,36 @@ No errors encountered. All 59 DBT tests passed on first run.
 - **Airflow BashOperator kills background processes** — `nohup` + `disown` don't reliably survive when the task's shell exits. For long-running processes, use `--once` mode or manage outside Airflow.
 - **Named volumes mount as root** — Docker named volumes get root ownership on first mount, regardless of Dockerfile `chown`. Use an entrypoint script to fix permissions on every start.
 - **`kill` with `&&` short-circuits cleanup** — if the process is already dead, `kill` returns non-zero and `&&` skips cleanup. Use `;` to ensure cleanup always runs.
+---
+
+## 2026-07-18 — Phase 3.1: Grafana
+
+### Changes
+- Added `grafana` service to `docker-compose.yml` (image `grafana/grafana:12.4.0`, port 3000, `grafana_data` named volume, healthcheck, anonymous Viewer access)
+- Added `GRAFANA_ADMIN_USER`/`GRAFANA_ADMIN_PASSWORD` to `.env.example` + `.env`
+- Created `grafana/provisioning/datasources/postgres.yml` — provisions two Postgres datasources: `chicago-analytics` (warehouse) + `airflow-metadata` (Airflow DB)
+- Created `grafana/provisioning/dashboards/dashboards.yml` — dashboard provider scanning `./grafana/dashboards/` every 30s
+- Created `grafana/dashboards/pipeline_health.json` — 10-panel pipeline health dashboard
+- Created `grafana/dashboards/crime_divvy_analysis.json` — 6-panel analysis dashboard
+- Created `docs/knowledge/grafana.md` — comprehensive Grafana reference (concepts, provisioning, env var gotchas, jsonData.database deep dive, DAG run order, useful commands, 10 common mistakes) with 8 mermaid diagrams
+- Created `docs/phases/phase-3.1-grafana.md` — phase completion doc
+- Updated `README.md` — added Grafana to services table, URLs, project structure, Phase 3.1 progress section, corrected DAG run order (stream first, then crime batch)
+- Updated `chat-history/current-state.md` — Phase 3.1 complete, 4 errors documented, DAG run order note added
+
+### Errors & Fixes
+
+| # | Error | Root Cause | Fix |
+|---|---|---|---|
+| 1 | `Failed to provision data sources: yaml: unmarshal errors: line 25: cannot unmarshal !!map into string` | Used Go template syntax `{{.POSTGRES_USER}}` in datasource YAML. Grafana provisioning uses shell-style `$VAR`, not Go templates. | Changed to `user: $POSTGRES_USER` and `password: $POSTGRES_PASSWORD`. |
+| 2 | `FATAL: no PostgreSQL user name specified in startup packet (SQLSTATE 28000)` on Airflow datasource | `AIRFLOW_DB_USER`/`AIRFLOW_DB_PASSWORD` env vars not in Grafana container. `docker compose restart` doesn't re-read env vars. | Added vars to docker-compose grafana env, then `docker compose up -d grafana` (recreates container). |
+| 3 | `relation "airflow_metadata.dag_run" does not exist` | Tried to cross-database query from `chicago_analytics` datasource. Postgres can't query across databases without `postgres_fdw`. | Added second datasource `airflow-metadata` pointing at `airflow_metadata` DB. Updated Airflow panels to use it; dropped `airflow_metadata.` schema prefix from SQL. |
+| 4 | Browser console: `You do not currently have a default database configured for this data source. Postgres requires a default database` — panels show "No data" despite API queries working | Grafana 12.4's Postgres plugin reads the database name from `jsonData.database`, NOT the top-level `database:` field. The top-level field works for the internal API (`/api/ds/query` with `datasourceId`) but the browser plugin uses a different code path that requires `jsonData.database`. | Added `database: chicago_analytics` (and `database: airflow_metadata`) inside the `jsonData:` block of each datasource in `postgres.yml`. Recreated Grafana container with `docker compose down grafana && docker compose up -d grafana`. |
+
+### Lessons Summary
+- **Grafana env var syntax is `$VAR`, not `{{.VAR}}`** — the cryptic "cannot unmarshal !!map into string" error is the signature of this mistake. Grafana's provisioning parser uses shell-style interpolation, not Go templates.
+- **`docker compose restart` ≠ `docker compose up -d` for env changes** — restart reuses the existing container (with old env). `up -d` recreates the container when config changes.
+- **Postgres databases are isolated** — unlike schemas (which share a database and can be cross-queried), databases are fully separate. Cross-DB queries need `postgres_fdw` or a second datasource. Our project has two databases (`chicago_analytics` + `airflow_metadata`), so Grafana needs two datasources.
+- **`grafana/grafana-oss` is deprecated** since 12.4.0 — use `grafana/grafana` (includes Enterprise features, free to use).
+- **Postgres datasource needs `jsonData.database`, not just top-level `database:`** — Grafana 12.4's Postgres plugin reads the DB name from `jsonData.database`. The top-level `database:` field is for older Grafana versions and is used by the internal API, but the browser plugin's query path requires `jsonData.database`. Without it, API queries succeed but browser panels show "No data" with a console error. Set both for compatibility.
+- **DAG run order: stream first, then crime batch** — `crime_batch`'s `dbt_build` runs `dbt build` which builds ALL models including `stg_station_status` (depends on `raw.station_status`, created by `divvy_stream`). If `divvy_stream` hasn't run, `crime_batch`'s `dbt_build` fails on try 1 (succeeds on retry — a race condition). Running `divvy_stream` first eliminates the race. This is a pre-existing design issue to address in Phase 3.3 (separate batch/stream dbt models or add a sensor).
+- **Verify in the browser, not just curl** — the internal API (`/api/ds/query` with `datasourceId`) uses the top-level `database:` field and gives false positives. The browser plugin uses `jsonData.database`. Always verify dashboards render in the browser after provisioning changes.

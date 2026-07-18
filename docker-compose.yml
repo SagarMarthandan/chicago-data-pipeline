@@ -420,6 +420,63 @@ services:
       timeout: 10s
       retries: 10
 
+  # ============ Grafana (Phase 3.1) ============
+  # Observability dashboarding layer. Reads from the Postgres warehouse
+  # (chicago_analytics) to visualize pipeline health + crime/Divvy analysis.
+  #
+  # Provisioning is file-based (no manual UI config):
+  #   grafana/provisioning/datasources/postgres.yml  — auto-creates PG source
+  #   grafana/provisioning/dashboards/dashboards.yml — points at ./grafana/dashboards
+  #   grafana/dashboards/*.json                       — the dashboard definitions
+  #
+  # Image: grafana/grafana:12.4.0 (not 13.1.0 — 13.x is 25 days old as of
+  # 2026-07-18; 12.4.0 is production-hardened. Matches the project's
+  # "stable versions only" rule, same logic as Airflow 3.0.0 over 3.3.0.)
+  # Note: grafana/grafana-oss is deprecated since 12.4.0 — use grafana/grafana.
+  grafana:
+    image: grafana/grafana:12.4.0
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Admin UI credentials — from .env (not hardcoded)
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      # Disable the "change password" prompt on first login (dev convenience)
+      GF_SECURITY_DISABLE_INITIAL_ADMIN_CREATION: "false"
+      # Auto-login users as Viewer (read-only) when not authenticated —
+      # convenient for local dev so dashboards are viewable without login.
+      # Set to "false" in any shared environment.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      # Postgres creds — passed through so the datasource provisioning
+      # YAML can interpolate ${POSTGRES_PASSWORD} inside the container.
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      # Airflow metadata DB creds — for the airflow-metadata datasource
+      # (Airflow panels query dag_run + task_instance in airflow_metadata).
+      AIRFLOW_DB_USER: ${AIRFLOW_DB_USER}
+      AIRFLOW_DB_PASSWORD: ${AIRFLOW_DB_PASSWORD}
+    ports:
+      # Grafana UI — http://localhost:3000
+      - "3000:3000"
+    volumes:
+      # Named volume — Grafana config, users, dashboard state persists
+      - grafana_data:/var/lib/grafana
+      # Provisioning — datasources + dashboard providers (read-only)
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      # Dashboard JSON files — referenced by provisioning/dashboards.yml
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+    healthcheck:
+      # Grafana exposes /api/health — returns 200 when ready
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
 # ============ Named Volumes ============
 # Named volumes persist data across container rebuilds.
 volumes:
@@ -429,3 +486,4 @@ volumes:
   zookeeper_data:
   zookeeper_log:
   spark_checkpoints:
+  grafana_data:
