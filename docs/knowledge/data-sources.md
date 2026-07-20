@@ -145,4 +145,35 @@
 - **is_renting/is_returning/is_installed** need `CAST(col AS BOOLEAN)` in Spark (0→false, 1→true)
 - **Optional scooter fields** — use nullable schema in Spark, don't fail on missing
 - **No community area in GBFS** — to answer "crime near Divvy station", we'll need to spatially join station lat/lon to community area boundaries (Phase 2.5 or later)
+### Phase 4 Data Sources (verified 2026-07-20)
+
+**Context:** Phase 4 moves to BigQuery and needs full historical data to answer the driving question (crime vs ridership). These sources were verified before committing to the Phase 4 plan.
+
+#### Chicago Crime History — BigQuery Public Dataset ✅ EXISTS
+
+- **Dataset:** `bigquery-public-data.chicago_crime.crime`
+- **Coverage:** 2001-present (~8M rows)
+- **Cost:** Free (public dataset, you pay only for queries against it)
+- **Usage:** Reference directly in DBT `sources.yml` — no ingestion needed
+- **Replaces:** The 2023-only Socrata extract from Phase 1
+- **Columns:** Similar to Socrata schema (date, primary_type, latitude, longitude, community_area, etc.)
+- **Note:** Querying public datasets still costs bytes scanned against your quota — use partition filters (table is partitioned by date) to control cost
+
+#### Divvy Trip History — NOT in BigQuery Public Datasets ⚠️
+
+- **Verified:** `bigquery-public-data.chicago_divvy_trips` does NOT exist (checked 2026-07-20 via web search of BigQuery public dataset catalog)
+- **Common wrong assumption:** Many tutorials/case studies (e.g. Google Data Analytics Cert "Cyclistic") assume this exists. It doesn't.
+- **Actual source:** AWS S3 bucket `https://divvy-tripdata.s3.amazonaws.com/index.html` — monthly CSV files, 2013-present (~50M rows total)
+- **Ingestion required:** Must load into BigQuery yourself
+  - **Path A (Airbyte):** S3 source connector → BigQuery destination. Shows ingestion skill. Slower for 50M rows.
+  - **Path B (`bq load`):** `gsutil cp` from S3 → GCS → `bq load` into BigQuery. Faster, less skill shown.
+  - **Recommended hybrid:** Airbyte for 1-month sample (skill demo), `bq load` for full history (pragmatic)
+- **Schema:** `ride_id`, `rideable_type`, `started_at`, `ended_at`, `start_station_name`, `start_station_id`, `end_station_name`, `end_station_id`, `start_lat`, `start_lng`, `end_lat`, `end_lng`, `member_casual` (schema evolved over years — older files differ)
+
+#### Other Chicago Public Datasets in BigQuery (for reference)
+
+- `bigquery-public-data.chicago_taxi_trips.taxi_trips` — taxi trips (alternative mobility data)
+- `bigquery-public-data.chicago_crime` — crime (used above)
+- No Divvy dataset in the public catalog
+
 ---

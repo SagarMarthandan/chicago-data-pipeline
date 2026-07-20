@@ -516,7 +516,7 @@ Add tests on the stream:
 
 ## Phase 4 — Go Cloud
 
-**Goal:** Same pipeline, now on cloud infrastructure provisioned with Terraform, with Airbyte replacing hand-rolled ingestion.
+**Goal:** Same pipeline, now on cloud infrastructure provisioned with Terraform, with Airbyte replacing hand-rolled ingestion. **Then answer the driving question** — does crime near a Divvy station affect ridership? — using full historical data (years of overlap) + BigQuery performance tuning (partitioning/clustering) + correlation analysis + (stretch) BigQuery ML.
 
 ### 4.1 Choose a warehouse
 
@@ -573,6 +573,98 @@ Spark → GCS (Parquet, data lake) → BigQuery (raw) → DBT → BigQuery (mart
 - Airbyte ingests crime data into BigQuery
 - DBT runs against BigQuery and produces the same marts
 - Grafana connects to BigQuery (or you keep a Postgres mirror for dashboards)
+
+---
+
+### 4.5 Partitioning & clustering (performance tuning)
+
+**Why:** On local Postgres (263K rows), partitioning was irrelevant — full scan = 100ms. On BigQuery (8M+ crime rows, 50M+ Divvy trips), partition pruning + clustering reduce bytes scanned and query cost. This is the "performance tuning that matters" bullet.
+
+**Implementation:**
+- DBT config on `fact_crime_events`: `materialized='table'`, `partition_by={"field":"date","data_type":"date"}`, `cluster_by=["community_area","primary_type"]`
+- DBT config on Divvy trip fact: `partition_by={"field":"started_at","data_type":"timestamp"}`, `cluster_by=["start_station_id"]`
+- Partitioning requires `materialized='table'` (not `view`) — BigQuery only partitions physical tables
+- Clustering columns: low-cardinality columns you filter/group by frequently
+
+**Lesson:** Partition pruning. Run the same query with and without a partition filter (`WHERE date BETWEEN ...`). Compare bytes scanned via `EXPLAIN` or query history in BigQuery console. Show real cost reduction. Over-partitioning (too many small partitions) hurts — learn the tradeoff.
+
+### 4.6 Ingest full history (the data that answers the question)
+
+**Why:** The driving question was unanswerable in Phases 1-3 because crime data was 2023 only and Divvy was 2026 live — no temporal overlap. Full history gives 5+ years of overlap.
+
+**Data sources (verified 2026-07-20):**
+- **Crime history:** `bigquery-public-data.chicago_crime` — official BigQuery public dataset, Chicago PD crime incidents 2001-present (~8M rows). Reference directly in DBT as an external source — no ingestion needed. This replaces the 2023-only Socrata extract from Phase 1.
+- **Divvy trip history:** NOT in BigQuery public datasets (verified — `bigquery-public-data.chicago_divvy_trips` does not exist). Raw data is monthly CSVs on AWS S3: `https://divvy-tripdata.s3.amazonaws.com/index.html` (2013-present, ~50M rows total). Must be ingested into BigQuery.
+
+**Implementation:**
+- **Crime (2001-present, ~8M rows):** Reference `bigquery-public-data.chicago_crime` directly in DBT (`sources.yml`). No ingestion cost. Filter to 2018-present in staging to keep marts focused.
+- **Divvy trips (2013-present, ~50M rows):** Two paths — pick based on time/scope:
+  - **Path A (recommended): Airbyte S3 source → BigQuery.** Configure Airbyte S3 connector pointing at `divvy-tripdata.s3.amazonaws.com`, incremental load by month. Shows Airbyte skill on a non-trivial source (S3 CSV → BigQuery). Slower to set up but demonstrates real ingestion engineering.
+  - **Path B (faster fallback): `bq load` from S3 via a script.** Google Cloud Storage Transfer Service or a one-time `gsutil cp` + `bq load` script. Less Airbyte skill shown, faster to insight.
+  - **Recommendation:** Path A for a 1-month sample (shows the skill), then `bq load` for the full history if Airbyte proves too slow for 50M rows. Pragmatic hybrid.
+
+**Lesson:** Verify data sources before committing to a plan. `bigquery-public-data` has Chicago crime and taxi trips but NOT Divvy — a common assumption that's wrong. Real-world DE: don't assume a dataset exists; check the catalog. When data lives on S3 as files, ingestion is your job — there's no shortcut.
+
+### 4.7 Analytics mart — answer the driving question
+
+**Why:** This is the project's payoff. Every phase before this was plumbing. This phase produces an actual finding.
+
+**Implementation:**
+- New fact table: `mart.fact_station_day` — one row per station per day:
+  - `station_id`, `date`, `trip_count` (from Divvy trips), `crime_count_within_quarter_mile` (from crime events)
+- Geospatial join in BigQuery:
+  ```sql
+  ST_DISTANCE(
+    ST_GEOGPOINT(station_lon, station_lat),
+    ST_GEOGPOINT(crime_lon, crime_lat)
+  ) <= 402  -- 0.25 mile in meters
+  ```
+- Time window: crimes on same day or prior 24h, within 0.25 mile of station
+- New mart: `mart.crime_ridership_correlation` — `CORR(trip_count, crime_count_within_quarter_mile)` across station-days, grouped by station / month / community_area
+- Grafana panel: scatter plot (trip_count vs crime_count), correlation coefficient gauge per station
+- Write a "Findings" section in README with the actual correlation coefficient + interpretation
+
+**Lesson:** Geospatial joins are expensive without partitioning/clustering — this is why 4.5 matters. A null result ("no correlation at station-day grain") is still a valid finding. The question being answered is the resume differentiator.
+
+### 4.8 BigQuery ML (stretch goal — only if 4.5-4.7 go smoothly)
+
+**Why:** "I trained a model" is a stronger resume bullet than "I ran a correlation." BigQuery ML is pure SQL — fits the DE story, no Python/ML engineering needed.
+
+**Implementation:**
+```sql
+CREATE OR REPLACE MODEL mart.crime_ridership_model
+OPTIONS(model_type='linear_reg', input_label_cols=['trip_count']) AS
+SELECT
+  trip_count,
+  crime_count_within_quarter_mile,
+  EXTRACT(DAYOFWEEK FROM date) AS day_of_week,
+  EXTRACT(MONTH FROM date) AS month,
+  station_id,
+  community_area
+FROM mart.fact_station_day
+WHERE date BETWEEN '2018-01-01' AND '2023-12-31';
+```
+- `ML.EVALUATE` — R², MAE, RMSE
+- `ML.WEIGHTS` — feature importance (does crime_count have a significant weight?)
+- `ML.PREDICT` — predicted ridership given crime count
+
+**Lesson:** BigQuery ML trades flexibility for convenience. Fine for linear regression on structured features. Not for anything complex. Know its limits.
+
+### 4.9 Phase 4 deliverable & verification
+
+**Done when:**
+- `terraform apply` creates BigQuery datasets + GCS bucket
+- `terraform destroy` cleans them up
+- Crime history sourced from `bigquery-public-data.chicago_crime` (referenced in DBT, no ingestion) OR Airbyte Socrata source → BigQuery
+- Divvy trip history ingested into BigQuery (Airbyte S3 source for sample, `bq load` for full history)
+- DBT runs against BigQuery and produces partitioned marts
+- Partition pruning verified: query with filter scans fewer bytes than without
+- `fact_station_day` mart built with geospatial crime-to-station join
+- `crime_ridership_correlation` mart produces a correlation coefficient
+- README "Findings" section states the correlation + interpretation
+- Grafana shows scatter plot + correlation gauge (or BigQuery console screenshots)
+- (Stretch) BigQuery ML model trained, `ML.EVALUATE` run, weights interpreted
+- **The driving question is answered.**
 
 ---
 

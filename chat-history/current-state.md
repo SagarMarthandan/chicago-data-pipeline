@@ -408,11 +408,11 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
 
 ## Next Session — Phase 4 (Cloud)
 
-**Goal:** Same pipeline on cloud infrastructure — Terraform → BigQuery + GCS + Airbyte.
+**Goal:** Move to cloud (Terraform → BigQuery + GCS + Airbyte) AND answer the driving question (crime vs ridership) using full historical data + partitioning/clustering + correlation analysis + (stretch) BigQuery ML. See `chicago-pipeline-plan.md` sections 4.1–4.9.
 
 ### Before starting Phase 4
 1. **Commit current work** — Phase 3.3 + 3.4 + all doc updates (README, changelog, operations, knowledge, phase docs). User commits manually.
-2. **Read `chicago-pipeline-plan.md` sections 4.1–4.4** — BigQuery choice rationale, Terraform sketch, architecture change (Spark→GCS→BigQuery, Airbyte replaces download_crime.py), Phase 4 gate.
+2. **Read `chicago-pipeline-plan.md` sections 4.1–4.9** — BigQuery choice, Terraform, architecture change, partitioning/clustering, full history ingestion, analytics mart, BigQuery ML (stretch), Phase 4 gate.
 3. **Prerequisites to confirm:**
    - Google Cloud account + project created
    - `gcloud` CLI installed + authenticated (`gcloud auth login`)
@@ -423,12 +423,17 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
 ### Phase 4 sub-phases (from plan)
 - **4.1 Choose a warehouse** — BigQuery (recommended: free tier, serverless, DBT first-class). Decision likely already made.
 - **4.2 Terraform** — `terraform/main.tf` provisions BigQuery datasets (raw, mart) + GCS bucket (data lake). Local backend first, migrate to GCS backend later.
-- **4.3 Architecture change** — Spark writes to GCS (Parquet) instead of Postgres. Airbyte replaces `download_crime.py` (Socrata source → BigQuery destination). DBT `profiles.yml` switches Postgres → BigQuery. Streaming path can stay on Postgres or move to BigQuery via `foreachBatch` → GCS → BigQuery load job.
-- **4.4 Verification** — `terraform apply` creates resources, `terraform destroy` cleans up, Airbyte ingests crime data, DBT runs against BigQuery, same marts produced.
+- **4.3 Architecture change** — Spark writes to GCS (Parquet) instead of Postgres. Airbyte replaces `download_crime.py`. DBT `profiles.yml` switches Postgres → BigQuery. Streaming path can stay on Postgres or move to BigQuery via `foreachBatch` → GCS → BigQuery load job.
+- **4.4 (old 4.4 verification — folded into 4.9)**
+- **4.5 Partitioning & clustering** — DBT config: `partition_by` on date, `cluster_by` on filter columns. Materialize as `table`. Verify partition pruning reduces bytes scanned. This is the "performance tuning that matters" bullet.
+- **4.6 Ingest full history** — Crime: reference `bigquery-public-data.chicago_crime` directly (2001-present, ~8M rows, NO ingestion needed). Divvy trips: NOT in BigQuery public datasets — ingest from S3 (`divvy-tripdata.s3.amazonaws.com`, monthly CSVs, ~50M rows) via Airbyte (sample) + `bq load` (full). See `docs/knowledge/data-sources.md` "Phase 4 Data Sources" section.
+- **4.7 Analytics mart — answer the driving question** — `fact_station_day` (station × day × trip_count × crime_count_within_quarter_mile). Geospatial join via `ST_DISTANCE` ≤ 402m. `crime_ridership_correlation` mart with `CORR(...)`. Grafana scatter plot + correlation gauge. README "Findings" section with actual coefficient.
+- **4.8 BigQuery ML (stretch)** — `CREATE MODEL mart.crime_ridership_model OPTIONS(model_type='linear_reg')`. `ML.EVALUATE`, `ML.WEIGHTS`, `ML.PREDICT`. Only if 4.5–4.7 go smoothly.
+- **4.9 Verification** — terraform apply/destroy, crime sourced, Divvy ingested, partitioned marts, pruning verified, `fact_station_day` built, correlation coefficient produced, README Findings written, (stretch) BQ ML trained. **The driving question is answered.**
 
 ### Key decisions for Phase 4
 - **Keep local Postgres for streaming?** The plan says streaming "can stay on Postgres." Decide whether to migrate streaming to BigQuery or keep it local. GBFS live data is small (~2K rows/run) — Postgres is fine. BigQuery streaming inserts have cost implications.
-- **Divvy trip history (the driving question):** Phase 4 is where we ingest Divvy trip history from Chicago Data Portal (separate from GBFS live feed). This has years of data to correlate with crime. This is the real fix for the driving question.
+- **Divvy trip history (the driving question):** NOT in BigQuery public datasets (verified 2026-07-20 — `bigquery-public-data.chicago_divvy_trips` does NOT exist). Raw data is monthly CSVs on AWS S3 (`divvy-tripdata.s3.amazonaws.com`). Ingest via Airbyte (sample) + `bq load` (full). Crime history IS available as `bigquery-public-data.chicago_crime` (reference directly, no ingestion). See `docs/knowledge/data-sources.md` Phase 4 section.
 - **DBT profiles.yml:** Currently has hardcoded Postgres password (in `.gitignore`). For Phase 4, use env vars or secrets manager.
 - **Grafana:** Can connect to BigQuery directly, or keep a Postgres mirror for dashboards. BigQuery queries have latency (~1-2s) vs Postgres (~100ms) — may affect dashboard refresh.
 
