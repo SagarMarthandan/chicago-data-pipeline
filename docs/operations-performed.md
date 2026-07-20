@@ -27,6 +27,7 @@ A chronological log of operations, files created, and structural changes made to
 - [2026-07-18 — Phase 3.1: Grafana](#2026-07-18--phase-31-grafana)
 - [2026-07-20 — Phase 3.2: DBT Tests](#2026-07-20--phase-32-dbt-tests)
 - [2026-07-20 — Phase 3.3: Airflow Robustness](#2026-07-20--phase-33-airflow-robustness)
+- [2026-07-20 — Phase 3.4: Verification](#2026-07-20--phase-34-verification)
 ---
 
 ## 2026-07-08 — Project Setup & Migration
@@ -863,3 +864,48 @@ Phase 3 (Observability) requires Grafana dashboards for pipeline health and anal
 - Grafana dashboard loads with 11 panels (was 10 — added "Failed tasks (last 7 days)")
 - Failed tasks panel query returns failed_tasks=1 (from the earlier failed SqlSensor attempt before the fix)
 - `on_failure_callback` wired via `default_args` — fires when a task exhausts all 3 retries
+
+---
+
+## 2026-07-20 — Phase 3.4: Verification
+
+### What Was Done
+- **Verification phase — no new permanent code.** Broke the pipeline in 3 ways and confirmed all observability mechanisms (Grafana panels, DBT tests, Airflow retries + callback) catch the failures.
+- Created a throwaway DAG (`verify_failure_dag.py`) with `exit 1` to test task failure handling. Deleted it after verification.
+- Pipeline restored to working state after each test: bad row removed, dbt build re-run (PASS=60), recorder updated Grafana.
+
+### Files Created (temporary)
+
+| File | Purpose | Status |
+|---|---|---|
+| `airflow/dags/verify_failure_dag.py` | Throwaway DAG with `exit 1` task, retries=3, on_failure_callback | **Deleted** after verification |
+| `docs/phases/phase-3.4-verification.md` | Phase completion doc | Permanent |
+
+### Verification Scenarios
+
+#### Scenario 1: Stream freshness alert
+- **Break:** Producer stopped (divvy_stream DAG completed, no new data flowing)
+- **Observability:** Grafana "Stream freshness" panel (id 6) — threshold red at 900s (15min)
+- **Result:** Freshness = 1195s (19.9min) > 900s → panel RED ✅
+- **Query:** `SELECT EXTRACT(EPOCH FROM (NOW() - MAX(ingest_timestamp))) AS seconds_since_last_ingest FROM raw.station_status;`
+
+#### Scenario 2: DBT test failure
+- **Break:** Injected bad crime row into `raw.crime_events` (id=99999999, lat=45.0, lon=-100.0 — South Dakota, outside Chicago bounds 41.64–42.03 / -87.95–-87.52)
+- **Observability:** DBT bounds tests in `staging/schema.yml` (latitude + longitude range checks) + Grafana "DBT test outcomes" panel (id 8)
+- **Result:** 2 tests failed (`expect_column_values_to_be_between` for latitude + longitude), recorder captured fail=2, Grafana panel showed passing=30 failing=2 → RED ✅
+- **Restore:** Deleted bad row, re-ran `dbt build` (PASS=60), ran recorder → Grafana panel back to passing=52 failing=0 → GREEN
+
+#### Scenario 3: Task failure + retries + callback
+- **Break:** Throwaway DAG `verify_failure_handling` with `fail_on_purpose` task (`exit 1`), retries=3, retry_delay=10s, on_failure_callback
+- **Observability:** Airflow retries (4 attempts) + on_failure_callback (structured log) + Grafana "Failed tasks" panel (id 11)
+- **Result:**
+  - Task failed after 4 attempts (try_number=4 = 1 initial + 3 retries) ✅
+  - `on_failure_callback` fired on final failure, logged: `dag=verify_failure_handling task=fail_on_purpose run=manual__... try=4 exception=None` ✅
+  - Grafana "Failed tasks" panel showed failed_tasks=2 (verify task + earlier sensor failure) → RED ✅
+- **Restore:** Deleted DAG file, ran `airflow dags delete verify_failure_handling` (removed 5 metadata records)
+
+### Phase 3 Gate — MET
+- Grafana shows live row counts and stream freshness ✅ (Phase 3.1)
+- Breaking the pipeline (stop the producer) shows up as a Grafana alert within minutes ✅ (Scenario 1 — panel red at 900s threshold)
+- DBT tests catch a deliberately introduced data quality issue ✅ (Scenario 2 — 2 tests failed on bad lat/lon)
+- Airflow retries a deliberately failing task and alerts on SLA miss ✅ (Scenario 3 — 4 attempts, callback fired, Grafana failed-tasks panel red. Note: Airflow 3.0 removed SLA feature; used execution_timeout + failed-tasks panel instead.)

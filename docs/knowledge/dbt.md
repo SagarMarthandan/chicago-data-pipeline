@@ -95,6 +95,42 @@ tests:
 - Always check actual `min()/max()` before setting range thresholds — use `SELECT min(col), max(col) FROM table`.
 - `where` config goes under `config:` (same as standard tests in DBT 1.11+).
 
+### dbt 1.11 `run_results.json` — No `resource_type` Field
+
+When parsing `target/run_results.json` (e.g., for a custom recorder script), dbt 1.11 does NOT populate `resource_type` — it is `None` for every entry. The `name` field is also `None`. To identify tests:
+
+```python
+for r in data["results"]:
+    if r.get("unique_id", "").startswith("test."):
+        # It's a test. Extract name from unique_id:
+        # unique_id = "test.chicago_crime.assert_crime_in_chicago_bounds.<hash>"
+        # name      = "assert_crime_in_chicago_bounds"
+        name = r["unique_id"].split(".")[-2]
+```
+
+Identify other resources by prefix: `model.`, `seed.`, `snapshot.`, etc.
+
+**`TOTAL=N` counts all resources, not just tests** — `TOTAL=60` = 1 seed + 7 models + 52 tests. Don't confuse dbt's resource total with the test count.
+
+### Singular Tests
+
+A dbt singular test is any `.sql` file in `tests/` that returns "bad" rows. dbt fails the test if the query returns ≥1 row. Example (`tests/assert_crime_in_chicago_bounds.sql`):
+
+```sql
+SELECT crime_id, latitude, longitude
+FROM {{ ref('fact_crime_events') }}
+WHERE latitude IS NOT NULL
+  AND longitude IS NOT NULL
+  AND (latitude NOT BETWEEN 41.64 AND 42.03
+       OR longitude NOT BETWEEN -87.95 AND -87.52)
+```
+
+Singular tests complement column-level generic tests (in `schema.yml`). A combined lat/long check is clearer in one singular test than two independent column-range tests. Both are valuable — column tests are granular, the singular test is a readable combined check.
+
+### Recording Test Results for Observability
+
+To surface dbt test results in Grafana, parse `run_results.json` after `dbt build` and upsert into a dedicated schema (e.g., `observability.dbt_test_results`). See `airflow/scripts/record_dbt_results.py` for the implementation. Key fields: `invocation_id` (groups tests from one `dbt build` run), `test_name`, `status` (pass/fail/warn/skip), `execution_time`.
+
 ### dbt Power User Extension (VS Code / Devin IDE)
 
 For dbt projects in a subdirectory (e.g. `dbt/` not at workspace root):

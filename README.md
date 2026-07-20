@@ -9,9 +9,9 @@ A data engineering learning project that answers: **Does crime near a Divvy bike
 | Warehouse | Postgres (local) → BigQuery (cloud) | 1 → 4 |
 | Batch processing | Spark DataFrames | 1 ✅ |
 | Streaming | Kafka + Spark Structured Streaming | 2 ✅ |
-| Transformation | DBT | 1+ |
-| Orchestration | Airflow | 1+ |
-| Observability | Grafana | 3 |
+| Transformation | DBT | 1+ ✅ |
+| Orchestration | Airflow | 1+ ✅ |
+| Observability | Grafana | 3 ✅ |
 | Ingestion (cloud) | Airbyte | 4 |
 | Infra (cloud) | Terraform | 4 |
 | Containerization | Docker + Docker Compose | 1+ |
@@ -91,12 +91,12 @@ graph LR
 
     P1 -->|"✅ DONE: docker compose up<br/>DAG runs, marts queryable"| P2
     P2 -->|"✅ DONE: live Divvy data<br/>in Postgres via Kafka"| P3
-    P3 -->|"done when: dashboards + tests<br>+ SLAs operational"| P4
+    P3 -->|"✅ DONE: Grafana + DBT tests<br/>+ Airflow robustness verified"| P4
     P4 -->|"done when: Terraform + BigQuery<br>+ Airbyte operational"| P5
 
     style P1 fill:#d4f4dd,stroke:#4ca85a
     style P2 fill:#d4f4dd,stroke:#4ca85a
-    style P3 fill:#f0f0f0,stroke:#999
+    style P3 fill:#d4f4dd,stroke:#4ca85a
     style P4 fill:#f0f0f0,stroke:#999
     style P5 fill:#f0f0f0,stroke:#999
 ```
@@ -133,11 +133,12 @@ See `docs/phases/` for phase-completion documents with architecture diagrams, er
 
 ### Phase 3 — Observability
 
-| Sub-Phase | Status | What was built |
-|---|---|---|
-| **3.1 Grafana** | **Complete** | `grafana/grafana:12.4.0` service (port 3000, anonymous Viewer). Two Postgres datasources provisioned via YAML (`chicago-analytics` + `airflow-metadata`). Two dashboards provisioned via JSON: Pipeline Health (10 panels — row counts, stream freshness, Airflow DAG runs) + Crime + Divvy Analysis (6 panels — top crime areas, crime types, station availability heatmap, crime-vs-ridership proxy). All 16 panel queries verified against live data. 4 errors hit: Go-template env var syntax, env vars not in container after restart, cross-database query failure, `jsonData.database` missing (browser panels showed "No data"). |
+| **3.1 Grafana** | **Complete** | `grafana/grafana:12.4.0` service (port 3000, anonymous Viewer). Two Postgres datasources provisioned via YAML (`chicago-analytics` + `airflow-metadata`). Two dashboards provisioned via JSON: Pipeline Health (11 panels — row counts, stream freshness, DBT test outcomes, failed tasks, Airflow DAG runs) + Crime + Divvy Analysis (6 panels — top crime areas, crime types, station availability heatmap, crime-vs-ridership proxy). All 16 panel queries verified against live data. 4 errors hit: Go-template env var syntax, env vars not in container after restart, cross-database query failure, `jsonData.database` missing (browser panels showed "No data"). |
+| **3.2 DBT tests** | **Complete** | Singular bounds test `assert_crime_in_chicago_bounds.sql` (lat 41.64–42.03, lon -87.95–-87.52). `record_dbt_results.py` recorder parses `run_results.json`, upserts into `observability.dbt_test_results` (new schema). `record_dbt_results` task added to both DAGs. Grafana DBT panel (id 8) rewired from static `SELECT 59` to live query (passing/failing/warnings). 52 tests, all pass. 2 errors: dbt 1.11 has no `resource_type` field (identify tests by `unique_id` prefix), Grafana JSON malformed from incremental edits. |
+| **3.3 Airflow robustness** | **Complete** | `SqlSensor` (`wait_for_stream_data`) in crime_batch — gates `dbt_build` on `raw.station_status` existing (fixes race condition with divvy_stream). `on_failure_callback` (shared `callbacks.py`) logs structured failure context. `retries=3` + `retry_delay=5min` on all non-cleanup tasks. `execution_timeout=30min` on `dbt_build` (Airflow 3.0 removed SLA feature — `sla=` is a no-op). `retries=0` on cleanup tasks. `AIRFLOW_CONN_POSTGRES_DEFAULT` env var for sensor's Postgres connection. Grafana "Failed tasks" panel (id 11). 3 errors: SqlSensor success callback receives row not cursor, SLA removed in 3.0, stuck DAG run blocked new runs. |
+| **3.4 Verification** | **Complete** | Broke pipeline 3 ways, confirmed observability catches all: (1) stopped producer → Grafana freshness panel red at 1195s > 900s threshold; (2) injected bad crime row (lat=45, lon=-100) → 2 DBT bounds tests failed → Grafana DBT panel red (failing=2); (3) throwaway DAG with `exit 1` → 4 attempts (1+3 retries) → on_failure_callback logged → Grafana failed-tasks panel red. Pipeline restored after each test. **Phase 3 gate passed.** |
 
-**Phase 3: IN PROGRESS.** 3.1 Grafana done. 3.2 DBT tests next. See `docs/phases/phase-3.1-grafana.md`.
+**Phase 3: DONE.** Grafana dashboards + DBT tests + Airflow robustness all verified. Phase 3 gate met (break pipeline → observability catches it). Verified 2026-07-20.
 
 ## Phased Build
 
@@ -170,8 +171,11 @@ chicago-data-pipeline/
 │   ├── passwords.json        # SimpleAuthManager passwords
 │   ├── requirements.txt      # postgres + docker providers + ingestion deps + kafka-python
 │   ├── dags/
-│   │   ├── crime_batch_dag.py     # Phase 1.5 — batch pipeline DAG
-│   │   └── divvy_stream_dag.py    # Phase 2.6 — streaming lifecycle DAG
+│   │   ├── crime_batch_dag.py     # Phase 1.5 — batch pipeline DAG (Phase 3.3: +SqlSensor, retries, callback)
+│   │   ├── divvy_stream_dag.py    # Phase 2.6 — streaming lifecycle DAG (Phase 3.3: +retries, callback)
+│   │   └── callbacks.py           # Phase 3.3 — shared on_failure_callback
+│   ├── scripts/
+│   │   └── record_dbt_results.py  # Phase 3.2 — parses dbt run_results.json → observability.dbt_test_results
 │   └── dbt_profiles/profiles.yml
 ├── spark/
 │   ├── Dockerfile            # apache/spark:3.5.1 + JDBC + Kafka connector (4 JARs) + entrypoint
@@ -189,7 +193,7 @@ chicago-data-pipeline/
 │   │   ├── datasources/postgres.yml  # 2 Postgres datasources (chicago-analytics + airflow-metadata)
 │   │   └── dashboards/dashboards.yml # dashboard provider (scans every 30s)
 │   └── dashboards/
-│       ├── pipeline_health.json      # 10-panel pipeline health dashboard
+│       ├── pipeline_health.json      # 11-panel pipeline health dashboard (Phase 3.1 + 3.2 DBT panel + 3.3 failed-tasks panel)
 │       └── crime_divvy_analysis.json # 6-panel crime + Divvy analysis dashboard
 ├── dbt/                      # DBT transformation project
 │   ├── Dockerfile             # separate dbt image (protobuf conflict with Airflow 3.0)
@@ -211,6 +215,8 @@ chicago-data-pipeline/
 │   │       ├── fact_crime_events.sql
 │   │       ├── fact_station_reads.sql    # Phase 2.5 — one row per station poll
 │   │       └── schema.yml
+│   ├── tests/
+│   │   └── assert_crime_in_chicago_bounds.sql  # Phase 3.2 — singular bounds test (lat 41.64–42.03, lon -87.95–-87.52)
 │   └── seeds/
 │       └── community_areas.csv  # 77 community areas from Chicago Data Portal
 ├── data/                     # Parquet output (gitignored)
@@ -228,7 +234,8 @@ chicago-data-pipeline/
     │   ├── TEMPLATE.md
     │   ├── phase-1.1-docker.md through phase-1.6-verification.md
     │   ├── phase-2.1-gbfs-data-source.md through phase-2.5-dbt-stream-models.md
-    │   └── phase-2.6-airflow-stream-dag.md
+    │   ├── phase-2.6-airflow-stream-dag.md
+    │   └── phase-3.1-grafana.md through phase-3.4-verification.md  # Phase 3 completion docs
     └── conventions/
         ├── airflow.md
         ├── dbt.md
@@ -292,8 +299,7 @@ docker compose down                        # stop (preserves data)
 docker compose down -v                     # stop + WIPE all data
 ```
 ### Running the pipeline (via Airflow)
-
-**Important:** On a cold start, run `divvy_stream` **first**, then `crime_batch`. The `crime_batch` DAG's `dbt_build` task runs `dbt build` which builds **ALL** models, including `stg_station_status` (the stream staging model) which depends on `raw.station_status`. That table is created by the `divvy_stream` DAG. If `divvy_stream` hasn't run yet, `crime_batch`'s `dbt_build` fails on try 1 (succeeds on retry after `divvy_stream` completes — a race condition). Running `divvy_stream` first eliminates the race: `raw.station_status` exists before `crime_batch`'s `dbt_build` runs.
+**Note:** The `crime_batch` DAG has a `SqlSensor` (`wait_for_stream_data`) that gates `dbt_build` on `raw.station_status` existing. This fixes the race condition with `divvy_stream` — `crime_batch` will wait (up to 1hr, poking every 60s) for the stream table to exist before building marts. On a cold start you can trigger either DAG first; the sensor handles the ordering. If you want to avoid the wait, trigger `divvy_stream` first.
 
 ```bash
 # 1. Start all services
@@ -313,8 +319,8 @@ docker compose exec postgres psql -U chicago -d chicago_analytics -c "SELECT COU
 docker compose exec postgres psql -U chicago -d chicago_analytics -c "SELECT COUNT(*) FROM mart.fact_station_reads;"
 ```
 
-The divvy_stream DAG runs 7 tasks: create_topic → start_producer → start_stream → wait_for_data → dbt_build → stop_stream → stop_producer (~60s total).
-The crime_batch DAG runs 4 tasks: download_crime → clear_dbt_schemas → spark_crime_batch → dbt_build (~163s total).
+The divvy_stream DAG runs 8 tasks: create_topic → start_producer → start_stream → wait_for_data → dbt_build → record_dbt_results → stop_stream → stop_producer (~60s total).
+The crime_batch DAG runs 6 tasks: download_crime → clear_dbt_schemas → spark_crime_batch → wait_for_stream_data (SqlSensor) → dbt_build → record_dbt_results (~165s total).
 
 ### Running pipeline steps manually (for debugging)
 

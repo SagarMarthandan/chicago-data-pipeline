@@ -14,11 +14,11 @@ Reference material, useful commands, and explanations accumulated throughout the
 | [dbt.md](dbt.md) | DBT | Key Jinja variables, common commands, model naming |
 | [spark.md](spark.md) | Spark | apache/spark image, spark-class commands, healthcheck, Kafka connector JARs, Structured Streaming + Kafka, foreachBatch→JDBC, checkpointing, useful commands |
 | [kafka.md](kafka.md) | Kafka | What is Kafka, core concepts (cluster, topic, partition, offset, producer, consumer, broker, Zookeeper) with mermaid diagrams, Spark Structured Streaming consumer, checkpointing, our setup, single-broker overrides, useful commands |
-| [airflow.md](airflow.md) | Airflow | Airflow 2.x vs 3.x comprehensive comparison (9 subsections), commands, SimpleAuthManager |
+| [airflow.md](airflow.md) | Airflow | Airflow 2.x vs 3.x comprehensive comparison (9 subsections), commands, SimpleAuthManager, **3.0 breaking changes** (SLA removed, SqlSensor row-not-cursor, try_number, on_failure_callback timing, DAG bundle refresh, dags delete TTY), sensors (reschedule vs poke), AIRFLOW_CONN_ env var pattern, cross-DAG dependencies (sensors vs dbt selectors) |
 | [git.md](git.md) | Git | Useful commands |
 | [data-sources.md](data-sources.md) | Data Sources | Chicago Crime Socrata API reference, Divvy GBFS API reference |
 | [mermaid-syntax.md](mermaid-syntax.md) | Mermaid Syntax | Quoting rules for special characters, scanner script |
-| [grafana.md](grafana.md) | Grafana | Core concepts (datasource, dashboard, panel, query, provisioning), our setup, file-based provisioning, env var interpolation gotcha (`$VAR` not `{{.VAR}}`), `jsonData.database` deep dive (browser vs API code paths), two-datasource pattern for separate Postgres databases, dashboard inventory, DAG run order (stream first), useful commands, 10 common mistakes, 8 mermaid diagrams |
+| [grafana.md](grafana.md) | Grafana | Core concepts (datasource, dashboard, panel, query, provisioning), our setup, file-based provisioning, env var interpolation gotcha (`$VAR` not `{{.VAR}}`), `jsonData.database` deep dive (browser vs API code paths), two-datasource pattern for separate Postgres databases, dashboard inventory (11 panels), DAG run order (sensor fixes race), useful commands, 10 common mistakes, 8 mermaid diagrams, **Phase 3.2–3.4** (DBT test panel, failed-tasks panel, panel thresholds as alerts, verification approach) |
 
 ## How to Use
 

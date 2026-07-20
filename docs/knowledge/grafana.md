@@ -35,7 +35,7 @@ graph LR
 - **Visual patterns** — heatmaps show temporal crime patterns, time series show stream ingestion rate, pie charts show DAG run state distribution
 - **Single pane of glass** — pipeline health + business analysis in one place
 - **Non-technical access** — anonymous Viewer role lets anyone see dashboards without SQL knowledge
-- **Alerting foundation** — Phase 3.3+ can add alerts on panel thresholds (e.g., "stream freshness > 5 min")
+- **Alerting via panel thresholds** — Phase 3.4 verified that panel thresholds turning red (e.g., stream freshness > 900s) IS sufficient alerting for local dev. Full Grafana unified alerting (contact points, notification policies, alert rules) is optional — see "Phase 3.2–3.4" section below.
 
 ---
 
@@ -100,9 +100,10 @@ graph TB
         P5["Panel 5: time series<br/>stream ingestion rate"]
         P6["Panel 6: stat<br/>stream freshness"]
         P7["Panel 7: stat<br/>latest Kafka msg timestamp"]
-        P8["Panel 8: stat<br/>DBT tests passing (placeholder)"]
+        P8["Panel 8: stat<br/>DBT test outcomes (live)"]
         P9["Panel 9: pie chart<br/>Airflow DAG runs (7d)"]
         P10["Panel 10: table<br/>recent Airflow task instances"]
+        P11["Panel 11: stat<br/>Failed tasks (7d)"]
     end
 
     TIME --> P1
@@ -155,8 +156,7 @@ sequenceDiagram
     participant Grafana
     participant Postgres
 
-    Browser->>Grafana: Load dashboard (uid: pipeline-health)
-    Grafana->>Grafana: Parse dashboard JSON, find 10 panels
+    Grafana->>Grafana: Parse dashboard JSON, find 11 panels
     loop Each panel
         Grafana->>Postgres: Execute panel's rawSql<br/>(via datasource uid → connection)
         Postgres-->>Grafana: Return rows
@@ -275,7 +275,7 @@ graph TB
     DS2 -->|"queries"| AM
 
     PH["Pipeline Health panels 1-8"] --> DS1
-    PH2["Pipeline Health panels 9-10"] --> DS2
+    PH2["Pipeline Health panels 9-11"] --> DS2
     CDA["Crime + Divvy Analysis panels 1-6"] --> DS1
 ```
 
@@ -438,7 +438,7 @@ If this returns data, the browser panels will render. If it returns an error, `j
 
 ### Pipeline Health (`pipeline_health.json`, uid: `pipeline-health`)
 
-10 panels monitoring pipeline health:
+11 panels monitoring pipeline health:
 
 | # | Panel | Type | Query |
 |---|---|---|---|
@@ -447,18 +447,20 @@ If this returns data, the browser panels will render. If it returns an error, `j
 | 3 | raw.station_status rows | stat | `SELECT COUNT(*) FROM raw.station_status` |
 | 4 | mart.fact_station_reads rows | stat | `SELECT COUNT(*) FROM mart.fact_station_reads` |
 | 5 | Stream ingestion rate (rows/hour) | time series | `date_trunc('hour', ingest_timestamp)` |
-| 6 | Stream freshness (seconds since last ingest) | stat | `EXTRACT(EPOCH FROM NOW() - MAX(ingest_timestamp))` |
+| 6 | Stream freshness (seconds since last ingest) | stat | `EXTRACT(EPOCH FROM NOW() - MAX(ingest_timestamp))` — red at 900s |
 | 7 | Latest Kafka message timestamp | stat | `MAX(kafka_timestamp)` |
-| 8 | DBT tests passing (static) | stat | Placeholder — wired to artifacts in Phase 3.2 |
+| 8 | DBT test outcomes (latest run) | stat | Live query against `observability.dbt_test_results` (Phase 3.2) — passing/failing/warnings |
 | 9 | Airflow DAG runs (last 7 days) | pie chart | `SELECT state, COUNT(*) FROM dag_run` (airflow-metadata datasource) |
 | 10 | Recent Airflow task instances | table | `SELECT dag_id, task_id, state, ... FROM task_instance` (airflow-metadata datasource) |
+| 11 | Failed tasks (last 7 days) | stat | `SELECT count(*) FROM task_instance WHERE state IN ('failed','upstream_failed')` (Phase 3.3) |
 
 Refresh: 30s. Time range: last 24h.
 
 **What this dashboard tells you at a glance:**
 - Are the row counts growing? (panels 1-4) → pipeline is ingesting
 - Is the stream live? (panels 5-7) → stream freshness < 60s means live; > 300s means stale
-- Are DBT tests passing? (panel 8) → data quality (currently placeholder)
+- Are DBT tests passing? (panel 8) → data quality (live — wired to `observability.dbt_test_results` in Phase 3.2)
+- Are tasks failing? (panel 11) → Airflow task failures including execution_timeout (Phase 3.3)
 - Are DAGs succeeding? (panels 9-10) → orchestration health
 
 ### Crime + Divvy Analysis (`crime_divvy_analysis.json`, uid: `crime-divvy-analysis`)
@@ -582,7 +584,7 @@ docker compose exec -T postgres psql -U airflow -d airflow_metadata -c "SELECT d
 
 8. **Verifying with curl only (false positive)** → The internal API (`/api/ds/query` with `datasourceId`) uses the top-level `database:` field and will succeed even when `jsonData.database` is missing. To verify the browser path, omit `datasourceId` from the query (see Useful Commands above). Always verify in the browser too.
 
-9. **Running crime_batch before divvy_stream** → `crime_batch`'s `dbt_build` fails on try 1 because `stg_station_status` depends on `raw.station_status` (created by `divvy_stream`). Run `divvy_stream` first, then `crime_batch`. See "DAG Run Order" section above.
+9. **Running crime_batch before divvy_stream** → ~~`crime_batch`'s `dbt_build` fails on try 1 because `stg_station_status` depends on `raw.station_status` (created by `divvy_stream`). Run `divvy_stream` first, then `crime_batch`.~~ **FIXED in Phase 3.3** — `crime_batch` now has a `SqlSensor` (`wait_for_stream_data`) that gates `dbt_build` on `raw.station_status` existing. You can trigger either DAG first; the sensor waits (up to 1hr) for the stream table. See "DAG Run Order" section above.
 
 10. **Stale browser cache after Grafana version change** → after recreating the Grafana container, hard-refresh the browser (`Ctrl + Shift + R`) to clear cached assets. Otherwise panels may show old errors or fail to render.
 
@@ -621,3 +623,57 @@ graph TB
 ```
 
 Grafana is the **read layer** — it sits at the end of the pipeline and queries the marts (and Airflow's metadata DB) to visualize results. It doesn't transform or store data; it only reads. This makes it safe to experiment with — adding or removing dashboards never affects the pipeline itself.
+
+---
+
+## Phase 3.2–3.4 — DBT Test Panel + Failed Tasks Panel + Verification
+
+### DBT test outcomes panel (id 8) — Phase 3.2
+
+Rewired from static `SELECT 59 AS dbt_tests_passing` to a live query against `observability.dbt_test_results`:
+
+```sql
+WITH latest AS (
+  SELECT invocation_id FROM observability.dbt_test_results
+  ORDER BY recorded_at DESC LIMIT 1
+)
+SELECT
+  SUM(CASE WHEN status='pass' THEN 1 ELSE 0 END) AS passing,
+  SUM(CASE WHEN status='fail' THEN 1 ELSE 0 END) AS failing,
+  SUM(CASE WHEN status='warn' THEN 1 ELSE 0 END) AS warnings
+FROM observability.dbt_test_results
+WHERE invocation_id = (SELECT invocation_id FROM latest);
+```
+
+Field overrides: Passing=green, Failing=red (≥1), Warnings=neutral. The `observability` schema is a dedicated schema for pipeline metadata (separate from `raw`/`staging`/`mart`), created idempotently by `airflow/scripts/record_dbt_results.py`.
+
+### Failed tasks panel (id 11) — Phase 3.3
+
+Queries the Airflow metadata DB for failed/upstream_failed tasks:
+
+```sql
+SELECT count(*) AS failed_tasks
+FROM task_instance
+WHERE state IN ('failed', 'upstream_failed')
+  AND start_date > NOW() - INTERVAL '7 days';
+```
+
+Originally planned as an "SLA misses" panel (querying `dag_warning` for `warning_type='sla_miss'`), but Airflow 3.0 removed the SLA feature entirely — `sla=` is a no-op, no SLA misses are recorded. Switched to failed tasks, which includes `execution_timeout` failures.
+
+### Panel thresholds as alerts — Phase 3.4
+
+For a local dev learning project, **panel thresholds turning red IS the alert**. Grafana's unified alerting system (contact points, notification policies, alert rules via `provisioning/alerting/`) is overkill — it adds files and complexity without teaching anything new at this stage. The panel threshold (e.g., stream freshness > 900s → red) provides the same observable signal.
+
+Full unified alerting would be a bonus feature if you want to learn Grafana's alerting pipeline specifically. The provisioning directory would be `grafana/provisioning/alerting/` with `contactpoints.yml`, `policies.yml`, and alert rules defined in the dashboard JSON or separate rule files.
+
+### Verification approach — Phase 3.4
+
+Three scenarios to verify observability catches failures:
+
+| Scenario | Break | Panel that catches it | Threshold |
+|---|---|---|---|
+| Stream freshness | Stop the producer | id 6 "Stream freshness" | > 900s (15min) → red |
+| DBT test failure | Inject bad data (out-of-bounds lat/lon) | id 8 "DBT test outcomes" | failing > 0 → red |
+| Task failure | Throwaway DAG with `exit 1` | id 11 "Failed tasks" | failed_tasks > 0 → red |
+
+Key: break the pipeline, confirm the panel turns red, restore the pipeline, confirm it turns green. The Grafana API (`/api/ds/query`) can verify panel queries return the expected values without needing the browser.

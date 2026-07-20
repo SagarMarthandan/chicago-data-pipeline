@@ -186,4 +186,43 @@ Airflow needs its OWN database to track DAG runs, task states, scheduling info, 
 - `catchup=False` — don't backfill historical runs on first deploy
 - `start_date` — fixed past date, NEVER `datetime.now()`
 
+
+### Airflow 3.0 Breaking Changes (beyond the 2.x→3.x table above)
+
+Learned in Phase 3.3. These are NOT in the official migration guide's headline list but bit us:
+
+| Feature | Airflow 2.x | Airflow 3.0 | Fix |
+|---|---|---|---|
+| `sla=` parameter on tasks | Supported — records SLA misses in `dag_warning` table | **REMOVED** — `sla=` triggers deprecation warning ("The SLA feature is removed in Airflow 3.0, to be replaced with a new implementation in >=3.1") and is a no-op. No SLA misses recorded anywhere. | Use `execution_timeout=timedelta(...)` instead — it actually fails the task if it exceeds the limit. For observability of missed SLAs, query `task_instance` for `state='failed'` (which includes timeout failures). |
+| `SqlSensor` success callback | Receives a cursor-like object (could call `.fetchone()`) | Receives `records[0]` — the first row tuple directly, NOT a cursor. `SqlSensor.poke` calls `hook.get_records(sql)` → list of rows, passes `records[0]` to the success callable. | Use `success=lambda row: row[0] is not None` (not `result.fetchone()[0]`). The row is a 1-tuple like `('raw.station_status',)` or `(None,)`. |
+| `try_number` on task_instance | Starts at 1 | Starts at 1 (unchanged) — a task with `retries=3` has try_numbers 1, 2, 3, 4 (1 initial + 3 retries). Final failure has `try_number=4`. | When querying failed tasks, `MAX(try_number)` tells you how many attempts were made. |
+| `on_failure_callback` timing | Fires on each failure | Fires ONLY after all retries are exhausted (final attempt only). The callback receives the context with `try_number` = the final attempt number. | This is correct behavior — you want to alert once after retries, not on every transient failure. Don't expect a callback per retry. |
+| DAG bundle refresh | New DAGs picked up quickly | New DAGs can take 30s+ to appear in `airflow dags list`. The dag-processor refresh interval is longer. | Run `airflow dags reserialize` to force a bundle refresh when you need a new DAG immediately. |
+| `airflow dags delete` | Interactive prompt | Same — prompts `y/n`, but `docker compose exec -T` has no TTY → `EOFError: EOF when reading a line`. | Pipe confirmation: `echo "y" \| docker compose exec -T airflow-scheduler airflow dags delete <dag_id>`. |
+
+### Sensors — `mode="reschedule"` vs `mode="poke"`
+
+| Mode | Behavior | When to use |
+|---|---|---|
+| `poke` (default) | Holds the worker slot for the entire wait. Pokes at `poke_interval` until success/timeout. | Short waits (<1min). Don't tie up a worker. |
+| `reschedule` | Releases the worker slot between pokes. Task goes `up_for_reschedule` → scheduler re-queues it at next poke time. | Long waits (minutes to hours). Frees workers for other tasks. |
+
+Our `wait_for_stream_data` sensor uses `reschedule` because it may wait up to 1hr for `divvy_stream` to create `raw.station_status`.
+
+### `AIRFLOW_CONN_<CONN_ID>` env var pattern
+
+Airflow auto-creates connections from environment variables. No need to use the UI or CLI:
+```
+AIRFLOW_CONN_POSTGRES_DEFAULT=postgresql://user:pass@host:port/db
+```
+Creates a connection with `conn_id="postgres_default"`. The env var name maps `AIRFLOW_CONN_` + uppercased conn_id with underscores. Useful for Docker Compose setups where you want connections declaratively configured.
+
+### Cross-DAG dependencies — sensors vs dbt selectors
+
+When DAG A's dbt models depend on tables created by DAG B, you have an implicit cross-DAG dependency. Two ways to handle it:
+
+1. **SqlSensor** (our choice) — DAG A has a sensor that waits for DAG B's table to exist. Makes the dependency explicit. Pro: teaches sensors (a plan goal). Con: adds a task + wait time.
+2. **dbt selectors** — split dbt models into batch-only vs stream-only selectors. DAG A runs `dbt build --select batch`, DAG B runs `dbt build --select stream`. Pro: no wait. Con: `dim_date` spans both sources (UNION ALL of crime + station dates), so you can't cleanly split it without breaking the model.
+
+We chose the sensor because `dim_date` legitimately needs both sources. The sensor makes the implicit dependency explicit without splitting models.
 ---

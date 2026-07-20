@@ -33,6 +33,7 @@ A running log of changes, errors, and fixes throughout the project. Use this to 
 - [2026-07-18 — Phase 3.1: Grafana](#2026-07-18--phase-31-grafana)
 - [2026-07-20 — Phase 3.2: DBT Tests](#2026-07-20--phase-32-dbt-tests)
 - [2026-07-20 — Phase 3.3: Airflow Robustness](#2026-07-20--phase-33-airflow-robustness)
+- [2026-07-20 — Phase 3.4: Verification](#2026-07-20--phase-34-verification)
 
 ---
 
@@ -762,3 +763,36 @@ No errors encountered. All 59 DBT tests passed on first run.
 - **Sensors + `max_active_runs=1` can block new runs** — a sensor in `up_for_retry` state keeps the DAG run in `running` state, which blocks new runs if `max_active_runs=1`. For sensor tasks, consider fewer retries or shorter retry delays to avoid long blocking periods.
 - **Make implicit cross-DAG dependencies explicit with sensors** — `dim_date` spans both crime + station sources, creating an implicit dependency between `crime_batch` and `divvy_stream`. The SqlSensor makes this explicit: `crime_batch` waits for `raw.station_status` to exist before building marts. This is cleaner than splitting dbt models (batch-only vs stream-only) because `dim_date` legitimately needs both sources.
 - **`AIRFLOW_CONN_<CONN_ID>` env var pattern** — Airflow auto-creates connections from env vars. `AIRFLOW_CONN_POSTGRES_DEFAULT=postgresql://user:pass@host:port/db` creates a connection with `conn_id="postgres_default"`. No need to use the Airflow UI or CLI.
+
+---
+
+## 2026-07-20 — Phase 3.4: Verification
+
+### Changes
+- **Verification phase — no new code.** Broke the pipeline in 3 ways and confirmed all observability mechanisms catch the failures. Pipeline restored to working state after each test.
+- Created + deleted a throwaway DAG (`verify_failure_dag.py`) to test task failure handling without touching production DAGs.
+
+### Verification Scenarios
+
+| # | Scenario | What Was Broken | Observability That Caught It | Result |
+|---|---|---|---|---|
+| 1 | Stream freshness alert | Producer stopped (divvy_stream DAG completed, no new data) | Grafana "Stream freshness" panel (id 6) — red at 900s threshold | Freshness = 1195s (19.9min) > 900s → panel RED ✅ |
+| 2 | DBT test failure | Injected bad crime row (lat=45.0, lon=-100.0 — South Dakota, outside Chicago bounds) into `raw.crime_events` | DBT bounds tests (latitude + longitude range checks in `staging/schema.yml`) + Grafana "DBT test outcomes" panel (id 8) | 2 tests failed (latitude + longitude bounds), recorder captured fail=2, Grafana panel showed passing=30 failing=2 → RED ✅ |
+| 3 | Task failure + retries + callback | Throwaway DAG with `exit 1` task, retries=3, retry_delay=10s, on_failure_callback | Airflow retries (4 attempts: 1 initial + 3 retries) + on_failure_callback (structured log) + Grafana "Failed tasks" panel (id 11) | Task failed after 4 attempts, callback logged `dag=verify_failure_handling task=fail_on_purpose try=4`, Grafana panel showed failed_tasks=2 → RED ✅ |
+
+### Errors & Fixes
+
+| # | Error | Root Cause | Fix |
+|---|---|---|---|
+| 1 | `dbt build` manual run failed: image `chicago-crime-dbt:latest` not found | Wrong image name. DAGs use `chicago-data-pipeline-dbt:latest`. | Used correct image name from `DBT_IMAGE` var in DAGs. |
+| 2 | `dbt build` manual run failed: `--project-dir /opt/dbt` does not exist | Wrong path. DAGs use `/opt/airflow/dbt` + `/opt/airflow/dbt_profiles`. | Used correct paths from `DBT_DIR` + `DBT_PROFILES_DIR` vars in DAGs. |
+| 3 | Throwaway DAG not found by `airflow dags trigger` | DAG bundle refresh interval is long (~30s+). New DAGs aren't immediately available. | Ran `airflow dags reserialize` to force bundle refresh, then triggered. |
+| 4 | `airflow dags delete` failed with `EOFError: EOF when reading a line` | Delete command prompts for confirmation (`y/n`), but `docker compose exec -T` has no TTY. | Piped `echo "y"` into the command. |
+
+### Lessons Summary
+- **Panel thresholds are sufficient alerts for local dev** — Grafana's unified alerting system (contact points, notification policies, alert rules) is overkill for a learning project. The panel turning red at a threshold IS the alert. Full alerting would be a bonus feature, not a phase gate requirement.
+- **DBT singular tests catch what column tests catch, but more readably** — the injected bad row (lat=45, lon=-100) failed BOTH the column-range tests in `staging/schema.yml` AND the singular bounds test `assert_crime_in_chicago_bounds.sql`. The column tests fired first (they run on `stg_crime_events`, the singular test runs on `fact_crime_events`). Both are valuable — column tests are granular, the singular test is a readable combined check.
+- **Airflow 3.0 `try_number` starts at 1, not 0** — a task with `retries=3` has try_number values 1, 2, 3, 4 (1 initial + 3 retries). The final failed attempt has `try_number=4`, not 3.
+- **`on_failure_callback` fires only after all retries are exhausted** — the callback logged `try=4` (the final attempt), not on each individual retry. This is the correct behavior — you want to alert once after retries are exhausted, not on every transient failure.
+- **Throwaway DAGs are the right way to test failure handling** — creating a temporary DAG with `exit 1` tests retries + callbacks without risking production DAGs or needing to modify them. Delete the DAG file + run `airflow dags delete` to clean up metadata.
+- **Manual `dbt build` is correct when you need to preserve test data** — triggering the crime_batch DAG would re-run `spark_crime_batch` and overwrite the injected bad row. Running `dbt build` manually (with the same image/paths from the DAG) preserves the bad row through the dbt build step.

@@ -1,6 +1,6 @@
 # Current State — Handoff Document
 
-> **Read this first in a new session.** This file is the handoff: current state, active decisions, and next steps. Last updated: 2026-07-20 (end of session — Phase 3.3 Airflow robustness COMPLETE, Phase 3.4 Verification NEXT).
+> **Read this first in a new session.** This file is the handoff: current state, active decisions, and next steps. Last updated: 2026-07-20 (end of session — Phase 3 COMPLETE (3.1–3.4), Phase 4 Cloud NEXT).
 
 ---
 
@@ -10,7 +10,7 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 
 - **Repo:** `~/chicago-data-pipeline/` (WSL, Ubuntu on Windows 10)
 - **Git:** initialized on `main`, no commits yet (user commits manually)
-- **Phase:** 1 COMPLETE. Phase 2 COMPLETE (2.1–2.6). Phase 3 IN PROGRESS (3.1 Grafana ✅, 3.2 DBT tests ✅, 3.3 Airflow robustness ✅, 3.4 Verification NEXT). Phase 4 locked. Phase 5 locked (plan written in chicago-pipeline-plan.md).
+- **Phase:** 1 COMPLETE. Phase 2 COMPLETE (2.1–2.6). Phase 3 COMPLETE (3.1 Grafana ✅, 3.2 DBT tests ✅, 3.3 Airflow robustness ✅, 3.4 Verification ✅). Phase 4 NEXT (cloud). Phase 5 locked (plan written in chicago-pipeline-plan.md).
 - **AI mode:** AI-writes-code (user said "you write it" — explicit mode switch from Socratic)
 
 ## Tech Stack
@@ -166,7 +166,7 @@ All Phase 1 sub-phases verified end-to-end. Cold start → DAG run → 4 tasks s
 ### Phase 2 Gate — MET
 Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming → Postgres → DBT → queryable marts. Analytics query "avg bikes available per station" returns correct results.
 
-## Phase 3 — IN PROGRESS (3.1 done, 3.2 done, 3.3 done, 3.4 next)
+## Phase 3 — COMPLETE (3.1, 3.2, 3.3, 3.4)
 
 ### Phase 3.1 — Grafana (COMPLETE)
 - Added `grafana` service to `docker-compose.yml` (`grafana/grafana:12.4.0`, port 3000, `grafana_data` volume, anonymous Viewer access)
@@ -201,6 +201,20 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
 - Added "Failed tasks (last 7 days)" panel (id 11) to `pipeline_health.json` — queries `task_instance` for failed/upstream_failed states. Originally planned as SLA misses panel but Airflow 3.0 removed SLA tracking.
 - **3 errors hit:** (1) SqlSensor `success` callback failed with `'str' object has no attribute 'fetchone'` — Airflow 3.0's `SqlSensor.poke` passes `records[0]` (a row tuple) to the callable, not a cursor; fixed to `lambda row: row[0] is not None`. (2) `sla=` is a no-op in Airflow 3.0 — SLA feature removed, replaced with `execution_timeout`. (3) Stuck DAG run (sensor `up_for_retry`) blocked new runs due to `max_active_runs=1` — manually marked stuck run as failed.
 - Verified: both DAGs parse, `postgres_default` connection created, `divvy_stream` 8/8 tasks succeeded, `crime_batch` 6/6 tasks succeeded (SqlSensor passed immediately), Grafana 11 panels loaded, failed tasks panel returns data.
+
+### Phase 3.4 — Verification (COMPLETE)
+- **Verification phase — no new permanent code.** Broke the pipeline in 3 ways and confirmed all observability mechanisms catch the failures.
+- **Scenario 1 (stream freshness):** Producer stopped → Grafana "Stream freshness" panel (id 6) turned red at 1195s > 900s threshold. ✅
+- **Scenario 2 (DBT test failure):** Injected bad crime row (lat=45, lon=-100 — South Dakota) → 2 DBT bounds tests failed (latitude + longitude range) → recorder captured fail=2 → Grafana "DBT test outcomes" panel (id 8) showed passing=30 failing=2 → RED. Restored: deleted bad row, re-ran dbt build (PASS=60), Grafana back to passing=52 failing=0. ✅
+- **Scenario 3 (task failure):** Throwaway DAG `verify_failure_handling` with `exit 1`, retries=3, on_failure_callback → task failed after 4 attempts (try_number=4) → callback logged `dag=verify_failure_handling task=fail_on_purpose try=4` → Grafana "Failed tasks" panel (id 11) showed failed_tasks=2 → RED. Deleted throwaway DAG + metadata. ✅
+- **4 errors hit:** (1) Wrong dbt image name in manual run (`chicago-crime-dbt` vs `chicago-data-pipeline-dbt`). (2) Wrong dbt path (`/opt/dbt` vs `/opt/airflow/dbt`). (3) Throwaway DAG not found by `airflow dags trigger` — bundle refresh interval long, fixed with `airflow dags reserialize`. (4) `airflow dags delete` failed with EOFError — no TTY for confirmation prompt, fixed with `echo "y" |`.
+- **Decision: panel thresholds are sufficient alerts for local dev** — Grafana unified alerting (contact points, notification policies, alert rules) is overkill for a learning project. Panel turning red IS the alert. Full alerting would be a bonus feature, not a phase gate requirement.
+
+### Phase 3 Gate — MET
+- Grafana shows live row counts and stream freshness ✅ (3.1)
+- Breaking the pipeline (stop producer) shows as Grafana alert within minutes ✅ (Scenario 1)
+- DBT tests catch a deliberately introduced data quality issue ✅ (Scenario 2)
+- Airflow retries a deliberately failing task and alerts on SLA miss ✅ (Scenario 3 — used execution_timeout + failed-tasks panel since Airflow 3.0 removed SLA)
 
 ## Files Created (full repo structure)
 
@@ -293,7 +307,7 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
    - **3.1 Grafana: COMPLETE** ✅ — grafana service + 2 datasources + 2 dashboards (Pipeline Health + Crime + Divvy Analysis). All 16 panel queries verified against live data.
    - **3.2 DBT tests: COMPLETE** ✅ — singular bounds test `assert_crime_in_chicago_bounds.sql` + `record_dbt_results.py` recorder writing to `observability.dbt_test_results` + `record_dbt_results` task in both DAGs + Grafana DBT panel wired to live test outcomes (passing=52, failing=0, warnings=0).
    - **3.3 Airflow robustness: COMPLETE** ✅ — SqlSensor race condition fix + `on_failure_callback` + retries=3 + `execution_timeout=30min` on dbt_build + `retries=0` on cleanup + `AIRFLOW_CONN_POSTGRES_DEFAULT` env var + Grafana "Failed tasks" panel. Airflow 3.0 removed SLA feature — used `execution_timeout` instead of `sla=`.
-   - **3.4 Verification: NEXT** — Break the pipeline and confirm observability catches it (stop producer → Grafana freshness red; bad data → DBT test failure red; fail task → retries + callback + Grafana failed tasks red).
+   - **3.4 Verification: COMPLETE** ✅ — Broke pipeline 3 ways: (1) stopped producer → Grafana freshness panel red at 1195s > 900s threshold; (2) injected bad crime row (lat=45, lon=-100) → 2 DBT bounds tests failed → Grafana DBT panel red (failing=2); (3) throwaway DAG with `exit 1` → 4 attempts (1+3 retries) → on_failure_callback logged → Grafana failed-tasks panel red. Pipeline restored after each test. Phase 3 gate MET.
    - Requires: Phase 2 complete (streaming pipeline works end-to-end) ✅ met
    - **Data scope note:** Crime data is 2023 only (263K rows, scoped for local Postgres). Divvy is 2026 live only. No temporal overlap — the driving question (crime vs ridership) can't be answered until Phase 4. Do NOT backfill more years now — local Postgres isn't the right home for 8M rows. Backfilling is a Phase 4 concern (BigQuery handles scale trivially). The real fix for the driving question is ingesting Divvy trip history from the Chicago Data Portal (separate from GBFS) — that has years of data to correlate with crime. Deferred to Phase 4.
    - **WSL space constraint:** User reports WSL already using ~40GB. This is a driver for Phase 4 (move heavy data to BigQuery, keep WSL for code + orchestration only). Do not add large datasets to local Postgres.
@@ -308,7 +322,7 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
    - **Future task (after Phase 5):** Comprehensive documentation restructuring — reorganize all docs for portfolio readability, consolidate redundant content, ensure consistent formatting across changelog/operations/phases/knowledge. Discuss approach when we get there.
    - Plan added to `chicago-pipeline-plan.md` (sections 5.1–5.6)
 
-- **Phase gates:** Phase 1 COMPLETE. Phase 2 COMPLETE (2.1–2.6 done). Phase 3 IN PROGRESS (3.1 Grafana done, 3.2 DBT tests done, 3.3 Airflow robustness done, 3.4 Verification next). Phase 4 locked. Phase 5 locked. Do NOT skip ahead.
+- **Phase gates:** Phase 1 COMPLETE. Phase 2 COMPLETE (2.1–2.6 done). Phase 3 COMPLETE (3.1 Grafana, 3.2 DBT tests, 3.3 Airflow robustness, 3.4 Verification — all done). Phase 4 NEXT (cloud). Phase 5 locked. Do NOT skip ahead.
 - **Learning protocol:** Socratic by default. User must say "write the code" to get code. Currently in AI-writes-code mode.
 - **Three-doc system:** `changelog.md` (errors), `docs/knowledge/` (reference, one file per topic), `docs/operations-performed.md` (audit trail). Update all three after every change.
 - **Phase-completion docs:** After each sub-phase is verified, create `docs/phases/phase-X.Y-<name>.md` from `TEMPLATE.md`. Include one high-level mermaid diagram + pointer to `docs/knowledge/architecture.md` for details.
