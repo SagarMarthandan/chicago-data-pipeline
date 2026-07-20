@@ -22,7 +22,7 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 | Streaming | Kafka + Spark Structured Streaming | 2 ✅ |
 | Transformation | DBT | 1+ ✅ |
 | Orchestration | Airflow | 1+ ✅ |
-| Observability | Grafana | 3.1 ✅ (3.2–3.4 in progress) |
+| Observability | Grafana | 3 ✅ (3.1 Grafana, 3.2 DBT tests, 3.3 Airflow robustness, 3.4 Verification) |
 | Cloud | Terraform + Airbyte | 4 (locked) |
 | CI/CD | GitHub Actions + GHCR | 5 (locked) |
 
@@ -44,7 +44,7 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 | dbt-build | `python:3.11-slim` + dbt | build-only (never runs, exists for `docker compose build`) |
 | grafana | `grafana/grafana:12.4.0` | **healthy** — UI on port 3000 (admin/admin), 2 datasources (chicago-analytics + airflow-metadata), 2 dashboards (Pipeline Health + Crime + Divvy Analysis) |
 
-**Note:** At end of session, all services running. `raw.crime_events` has 263,395 rows. `raw.station_status` has 2,001 rows (from divvy_stream DAG run). `mart.fact_station_reads` has 2,001 rows, 1,125 unique stations. `mart.fact_crime_events` has 263,395 rows. Start all services with `docker compose up -d`.
+**Note:** At end of session, all services running. `raw.crime_events` has 263,402 rows. `raw.station_status` has 2,253 rows (from divvy_stream DAG run). `mart.fact_station_reads` has 2,253 rows, 1,125 unique stations. `mart.fact_crime_events` has 263,402 rows. `observability.dbt_test_results` has 52 tests (all pass, latest invocation). Start all services with `docker compose up -d`.
 
 ### URLs
 - **Airflow UI:** http://localhost:8080 (admin / admin)
@@ -55,7 +55,7 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 - **Kafka (Docker network):** kafka:9092
 - **Grafana UI:** http://localhost:3000 (admin / admin) — anonymous Viewer access enabled
 
-### Key Architecture Decisions (Phase 1 + Phase 2)
+### Key Architecture Decisions (Phase 1 + Phase 2 + Phase 3)
 - **3 Postgres schemas:** `raw`, `staging`, `mart` (no `intermediate`)
 - **Two databases in one Postgres:** `chicago_analytics` (warehouse) + `airflow_metadata` (Airflow internal)
 - **Airflow 3.0.0** (upgraded from 2.8.4 — 2.x is EOL since April 2026)
@@ -81,6 +81,14 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 - **DBT dedup on Kafka coordinates** — `stg_station_status` uses `DISTINCT ON (kafka_partition, kafka_offset)` (streaming equivalent of crime's `DISTINCT ON (id)`)
 - **dim_date spans all fact sources** — UNION ALL of min/max from `stg_crime_events` + `stg_station_status`; 1,292 rows covering 2023 + 2026
 - **fact_station_reads grain = one row per station poll** — station_id is NOT unique (repeats across polls); no unique test on it
+- **Observability schema (`observability`)** — dedicated schema for pipeline metadata (`dbt_test_results`), separate from `raw`/`staging`/`mart`. Created idempotently by `record_dbt_results.py`.
+- **Grafana: two datasources** — `chicago-analytics` (warehouse) + `airflow-metadata` (Airflow DB). Postgres databases are isolated; can't cross-query without `postgres_fdw`.
+- **Grafana: panel thresholds as alerts** — Phase 3.4 verified that panel turning red IS sufficient alerting for local dev. Full Grafana unified alerting (contact points, policies, rules) is optional, not a phase gate requirement.
+- **SqlSensor for cross-DAG dependency** — `crime_batch` has `wait_for_stream_data` sensor that gates `dbt_build` on `raw.station_status` existing. Makes the implicit `dim_date` dependency on both sources explicit. Chosen over splitting dbt models because `dim_date` legitimately spans both sources.
+- **`execution_timeout` not `sla=`** — Airflow 3.0 removed the SLA feature (`sla=` is a no-op). Use `execution_timeout=timedelta(...)` which actually fails the task on timeout.
+- **`retries=0` on cleanup tasks** — `stop_stream`/`stop_producer` are best-effort cleanup with `trigger_rule=ALL_DONE`. Retrying adds delay without value.
+- **`AIRFLOW_CONN_POSTGRES_DEFAULT` env var** — Airflow auto-creates connections from env vars. No need for UI/CLI configuration.
+- **Custom dbt results recorder vs dbt-artifacts package** — 40-line `record_dbt_results.py` script, no new dbt dependency. Identifies tests by `unique_id` prefix `test.` (dbt 1.11 has no `resource_type` field).
 
 ## Phase 1 — COMPLETE (1.1–1.6)
 
@@ -233,8 +241,9 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
 │   ├── scripts/
 │   │   └── record_dbt_results.py ← Phase 3.2 — parses dbt run_results.json → observability.dbt_test_results
 │   ├── dags/
-│   │   ├── crime_batch_dag.py    ← Phase 3.2 — added record_dbt_results task
-│   │   └── divvy_stream_dag.py   ← Phase 2.6 + 3.2 — streaming lifecycle DAG + record_dbt_results task
+│   │   ├── crime_batch_dag.py    ← Phase 1.5 + 3.2 (record_dbt_results) + 3.3 (SqlSensor, retries, execution_timeout, on_failure_callback)
+│   │   ├── divvy_stream_dag.py   ← Phase 2.6 + 3.2 (record_dbt_results) + 3.3 (retries, execution_timeout, on_failure_callback, retries=0 on cleanup)
+│   │   └── callbacks.py          ← Phase 3.3 — shared on_failure_callback
 │   └── dbt_profiles/profiles.yml
 ├── spark/
 │   ├── Dockerfile            ← apache/spark:3.5.1 + JDBC + Kafka connector + entrypoint (Phase 2.6)
@@ -249,7 +258,7 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
 │   │   ├── datasources/postgres.yml  ← 2 datasources (chicago-analytics + airflow-metadata)
 │   │   └── dashboards/dashboards.yml ← dashboard provider
 │   └── dashboards/
-│       ├── pipeline_health.json      ← 10-panel pipeline health dashboard (DBT panel wired live in 3.2)
+│       ├── pipeline_health.json      ← 11-panel pipeline health dashboard (DBT panel wired live in 3.2, failed-tasks panel added in 3.3)
 │       └── crime_divvy_analysis.json ← 6-panel analysis dashboard
 ├── kafka/                    ← Phase 2.3
 │   └── producers/
@@ -282,7 +291,7 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
 └── docs/
     ├── knowledge/
     │   ├── data-sources.md   ← expanded with full GBFS schema (Phase 2.1)
-    │   ├── grafana.md        ← Phase 3.1 — comprehensive reference: concepts, provisioning, env var gotchas, jsonData.database deep dive, DAG run order, 10 common mistakes, 8 mermaid diagrams
+    │   ├── grafana.md        ← Phase 3.1–3.4 — comprehensive reference: concepts, provisioning, env var gotchas, jsonData.database deep dive, DAG run order (sensor fixes race), 11-panel inventory, 10 common mistakes, Phase 3.2–3.4 (DBT panel, failed-tasks panel, thresholds as alerts, verification approach)
     │   ├── wsl.md, uv.md, docker-compose.md, postgres.md, dbt.md, spark.md
     │   ├── architecture.md   ← 10 sections (now includes Kafka + Zookeeper + Spark Streaming)
     │   ├── kafka.md          ← full concepts + 8 mermaid diagrams + Spark consumer + checkpointing
@@ -291,12 +300,14 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
     │   ├── data-sources.md   ← expanded with full GBFS schema (Phase 2.1)
     │   └── mermaid-syntax.md
     ├── learning-protocol.md
-    ├── operations-performed.md ← TOC + entries through Phase 3.2
+    ├── operations-performed.md ← TOC + entries through Phase 3.4
     ├── phases/
     │   ├── phase-1.1-docker.md through phase-1.6-verification.md
     │   ├── phase-2.1-gbfs-data-source.md through phase-2.6-airflow-stream-dag.md
     │   ├── phase-3.1-grafana.md             ← Phase 3.1
-    │   └── phase-3.2-dbt-tests.md           ← NEW (Phase 3.2)
+    │   ├── phase-3.2-dbt-tests.md           ← Phase 3.2
+    │   ├── phase-3.3-airflow-robustness.md  ← Phase 3.3
+    │   └── phase-3.4-verification.md        ← Phase 3.4
     └── conventions/
         ├── airflow.md, dbt.md, docker.md, spark.md
 ```
@@ -364,7 +375,7 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
 - **uv pip install --system silent failure:** RESOLVED — uv can't create `kafka` directory in site-packages. Switched to `pip install`.
 - **Named volumes mount as root:** RESOLVED — `spark/entrypoint.sh` chowns checkpoint dir before dropping to spark via gosu.
 - **Airflow BashOperator kills background processes:** RESOLVED — producer uses `--once` mode (foreground, single poll). For 24/7 streaming, run as separate Docker service (Phase 3).
-- **DAG ordering: crime_batch before divvy_stream:** `dim_date.sql` UNION ALLs min/max dates from both `stg_crime_events` and `stg_station_status`. Both DAGs run `dbt build` (all models), so each needs both raw tables. On cold start: crime_batch's `dbt_build` fails on `stg_station_status` (table doesn't exist yet) — expected, non-blocking, all crime models build fine. Then divvy_stream's `dbt_build` succeeds (both raw tables exist). Fix for Phase 3: split `dbt build` by selector per DAG, or add a separate `dim_date` finalize DAG.
+- **DAG ordering: crime_batch before divvy_stream:** RESOLVED in Phase 3.3 — `crime_batch` now has a `SqlSensor` (`wait_for_stream_data`) that gates `dbt_build` on `raw.station_status` existing. Either DAG can be triggered first; the sensor waits (up to 1hr) for the stream table if needed.
 
 ## Chat History Chunks
 
@@ -389,3 +400,43 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
 | `2026-07-15/04-phase-2.4-spark-streaming.md` | Spark Structured Streaming: Kafka connector JARs, divvy_stream.py, foreachBatch→JDBC, checkpoint volume |
 | `2026-07-16/01-phase-2.5-dbt-stream-models.md` | DBT stream models: stg_station_status, fact_station_reads, dim_date expansion, 59/59 tests pass |
 | `2026-07-16/02-phase-2.6-airflow-stream-dag.md` | Airflow stream DAG: 7-task lifecycle, 9 errors (kafka-python install, volume shadowing, checkpoint perms, BashOperator bg process kill), Phase 2 gate met |
+| `2026-07-20/01-phase-3.2-dbt-tests.md` | DBT singular bounds test, record_dbt_results.py recorder, observability schema, Grafana DBT panel wired to live data |
+| `2026-07-20/02-phase-3.3-airflow-robustness.md` | SqlSensor race condition fix, on_failure_callback, retries, execution_timeout (Airflow 3.0 removed SLA), Grafana failed-tasks panel |
+| `2026-07-20/03-phase-3.4-verification.md` | Broke pipeline 3 ways: stopped producer, injected bad data, failed a task — all caught by observability. Phase 3 gate met. |
+
+---
+
+## Next Session — Phase 4 (Cloud)
+
+**Goal:** Same pipeline on cloud infrastructure — Terraform → BigQuery + GCS + Airbyte.
+
+### Before starting Phase 4
+1. **Commit current work** — Phase 3.3 + 3.4 + all doc updates (README, changelog, operations, knowledge, phase docs). User commits manually.
+2. **Read `chicago-pipeline-plan.md` sections 4.1–4.4** — BigQuery choice rationale, Terraform sketch, architecture change (Spark→GCS→BigQuery, Airbyte replaces download_crime.py), Phase 4 gate.
+3. **Prerequisites to confirm:**
+   - Google Cloud account + project created
+   - `gcloud` CLI installed + authenticated (`gcloud auth login`)
+   - Terraform installed (`terraform version`)
+   - BigQuery API enabled on the GCP project
+   - Billing enabled (BigQuery free tier needs billing account linked, even though cost = $0)
+
+### Phase 4 sub-phases (from plan)
+- **4.1 Choose a warehouse** — BigQuery (recommended: free tier, serverless, DBT first-class). Decision likely already made.
+- **4.2 Terraform** — `terraform/main.tf` provisions BigQuery datasets (raw, mart) + GCS bucket (data lake). Local backend first, migrate to GCS backend later.
+- **4.3 Architecture change** — Spark writes to GCS (Parquet) instead of Postgres. Airbyte replaces `download_crime.py` (Socrata source → BigQuery destination). DBT `profiles.yml` switches Postgres → BigQuery. Streaming path can stay on Postgres or move to BigQuery via `foreachBatch` → GCS → BigQuery load job.
+- **4.4 Verification** — `terraform apply` creates resources, `terraform destroy` cleans up, Airbyte ingests crime data, DBT runs against BigQuery, same marts produced.
+
+### Key decisions for Phase 4
+- **Keep local Postgres for streaming?** The plan says streaming "can stay on Postgres." Decide whether to migrate streaming to BigQuery or keep it local. GBFS live data is small (~2K rows/run) — Postgres is fine. BigQuery streaming inserts have cost implications.
+- **Divvy trip history (the driving question):** Phase 4 is where we ingest Divvy trip history from Chicago Data Portal (separate from GBFS live feed). This has years of data to correlate with crime. This is the real fix for the driving question.
+- **DBT profiles.yml:** Currently has hardcoded Postgres password (in `.gitignore`). For Phase 4, use env vars or secrets manager.
+- **Grafana:** Can connect to BigQuery directly, or keep a Postgres mirror for dashboards. BigQuery queries have latency (~1-2s) vs Postgres (~100ms) — may affect dashboard refresh.
+
+### What stays the same
+- Airflow orchestration (DAGs, tasks, retries, callbacks)
+- DBT models (staging + marts) — just switch the adapter
+- Grafana dashboards (panels + queries may need tweaking for BigQuery SQL dialect)
+- Kafka + Spark streaming (if kept on local Postgres)
+
+### WSL space note
+User reports WSL using ~40GB. Phase 4 moves heavy data to BigQuery — WSL stays for code + orchestration only. Do not add large datasets to local Postgres.

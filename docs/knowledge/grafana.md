@@ -482,9 +482,9 @@ Refresh: 1m. Time range: last 30d.
 
 ---
 
-## DAG Run Order — Stream First, Then Crime Batch
+## DAG Run Order — Sensor Handles It (Phase 3.3+)
 
-**Correct order:** Trigger `divvy_stream` DAG **first**, then `crime_batch` DAG.
+**Either DAG can be triggered first.** The `crime_batch` DAG has a `SqlSensor` (`wait_for_stream_data`) that gates `dbt_build` on `raw.station_status` existing. If `divvy_stream` hasn't run yet, the sensor waits (up to 1hr, poking every 60s in `reschedule` mode) until the stream table appears.
 
 ```mermaid
 sequenceDiagram
@@ -492,33 +492,30 @@ sequenceDiagram
     participant Airflow
     participant Postgres
 
-    User->>Airflow: Trigger divvy_stream DAG
-    Airflow->>Postgres: create_topic → start_producer → start_stream
-    Airflow->>Postgres: wait_for_data → dbt_build (builds stg_station_status + fact_station_reads)
-    Note over Postgres: raw.station_status + mart.fact_station_reads now exist
-    Airflow->>Airflow: divvy_stream COMPLETE ✅
-
-    User->>Airflow: Trigger crime_batch DAG
+    User->>Airflow: Trigger crime_batch DAG (or divvy_stream — order doesn't matter)
     Airflow->>Postgres: download_crime → clear_dbt_schemas → spark_crime_batch
+    Airflow->>Airflow: wait_for_stream_data (SqlSensor)
+    alt raw.station_status exists
+        Airflow->>Airflow: Sensor passes immediately
+    else raw.station_status missing
+        Airflow->>Airflow: Sensor pokes every 60s (reschedule mode, up to 1hr)
+        User->>Airflow: Trigger divvy_stream DAG (if not already running)
+        Airflow->>Postgres: create_topic → start_producer → start_stream → wait_for_data → dbt_build → record_dbt_results → stop_stream → stop_producer
+        Note over Postgres: raw.station_status now exists
+        Airflow->>Airflow: Sensor passes on next poke
+    end
     Airflow->>Postgres: dbt_build (builds ALL models including stg_station_status)
-    Note over Postgres: raw.station_status already exists → stg_station_status builds successfully
-    Airflow->>Airflow: crime_batch COMPLETE ✅ (no retry needed)
+    Airflow->>Postgres: record_dbt_results
+    Airflow->>Airflow: crime_batch COMPLETE ✅
 ```
 
-**Why stream first?** The `crime_batch` DAG's `dbt_build` task runs `dbt build` which builds **ALL** models, including `stg_station_status` (the stream staging model). `stg_station_status` depends on `raw.station_status`, which is created by the `divvy_stream` DAG. If `divvy_stream` hasn't run yet, `raw.station_status` doesn't exist, and `crime_batch`'s `dbt_build` fails on the first try (then succeeds on retry after `divvy_stream` completes — a race condition).
+**Why the sensor exists:** `dim_date` spans both crime (2023) + station (2026) sources via UNION ALL. `crime_batch`'s `dbt_build` builds ALL models including `stg_station_status` (depends on `raw.station_status` from `divvy_stream`). Before Phase 3.3, this was a race condition — `dbt_build` would fail on try 1 if `divvy_stream` hadn't run, then succeed on retry. The sensor makes the implicit cross-DAG dependency explicit.
 
-**If you run crime_batch first:**
-- `dbt_build` fails on try 1 (missing `raw.station_status`)
-- Airflow retries after 5 min (default retry delay)
-- If `divvy_stream` completes in that window, retry succeeds
-- If not, crime_batch fails entirely
+**Task counts (Phase 3.3+):**
+- `divvy_stream`: 8 tasks — create_topic → start_producer → start_stream → wait_for_data → dbt_build → record_dbt_results → stop_stream → stop_producer
+- `crime_batch`: 6 tasks — download_crime → clear_dbt_schemas → spark_crime_batch → wait_for_stream_data (sensor) → dbt_build → record_dbt_results
 
-**If you run divvy_stream first:**
-- `raw.station_status` + `mart.fact_station_reads` created
-- Then `crime_batch`'s `dbt_build` succeeds on the first try
-- No retry, no race condition
-
-This is a pre-existing design issue (the `crime_batch` DAG shouldn't build stream models, or should depend on `divvy_stream` completing). It will be addressed in Phase 3.3 (Airflow robustness — adding a sensor or separating batch/stream dbt models).
+**Tip:** To avoid the sensor wait (~1min minimum), trigger `divvy_stream` first. But it's not required — the sensor handles the ordering.
 
 ---
 
