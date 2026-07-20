@@ -120,6 +120,9 @@ x-airflow-common: &airflow-common
 
     # DBT profiles for Airflow container (host: postgres, not localhost)
     - ./airflow/dbt_profiles:/opt/airflow/dbt_profiles
+    # Airflow helper scripts — mounted so BashOperator tasks can run them
+    # (Phase 3.2: record_dbt_results.py parses dbt run_results.json).
+    - ./airflow/scripts:/opt/airflow/scripts
 
     # Kafka producer scripts — mounted so Airflow can start the producer (Phase 2.6).
     # Mount as /opt/airflow/kafka_scripts (NOT /opt/airflow/kafka) to avoid

@@ -30,6 +30,8 @@ A running log of changes, errors, and fixes throughout the project. Use this to 
 - [2026-07-15 — Phase 2.4: Spark Structured Streaming](#2026-07-15--phase-24-spark-structured-streaming)
 - [2026-07-16 — Phase 2.5: DBT Stream Models](#2026-07-16--phase-25-dbt-stream-models)
 - [2026-07-16 — Phase 2.6: Airflow Stream DAG](#2026-07-16--phase-26-airflow-stream-dag)
+- [2026-07-18 — Phase 3.1: Grafana](#2026-07-18--phase-31-grafana)
+- [2026-07-20 — Phase 3.2: DBT Tests](#2026-07-20--phase-32-dbt-tests)
 
 ---
 
@@ -706,3 +708,28 @@ No errors encountered. All 59 DBT tests passed on first run.
 - **Postgres datasource needs `jsonData.database`, not just top-level `database:`** — Grafana 12.4's Postgres plugin reads the DB name from `jsonData.database`. The top-level `database:` field is for older Grafana versions and is used by the internal API, but the browser plugin's query path requires `jsonData.database`. Without it, API queries succeed but browser panels show "No data" with a console error. Set both for compatibility.
 - **DAG run order: stream first, then crime batch** — `crime_batch`'s `dbt_build` runs `dbt build` which builds ALL models including `stg_station_status` (depends on `raw.station_status`, created by `divvy_stream`). If `divvy_stream` hasn't run, `crime_batch`'s `dbt_build` fails on try 1 (succeeds on retry — a race condition). Running `divvy_stream` first eliminates the race. This is a pre-existing design issue to address in Phase 3.3 (separate batch/stream dbt models or add a sensor).
 - **Verify in the browser, not just curl** — the internal API (`/api/ds/query` with `datasourceId`) uses the top-level `database:` field and gives false positives. The browser plugin uses `jsonData.database`. Always verify dashboards render in the browser after provisioning changes.
+
+---
+
+## 2026-07-20 — Phase 3.2: DBT Tests
+
+### Changes
+- Created `dbt/tests/assert_crime_in_chicago_bounds.sql` — singular test: flags crime events with populated lat/long outside Chicago's bounding box (lat 41.64–42.03, lon -87.95–-87.52). Complements the per-column range tests on `fact_crime_events.latitude/longitude` with a single readable combined check.
+- Created `airflow/scripts/record_dbt_results.py` — parses `dbt/target/run_results.json` after `dbt build` and upserts one row per test into `observability.dbt_test_results` (new schema). Idempotent: keyed on `(invocation_id, test_name)`, DELETE-then-INSERT per invocation. Runs in the Airflow container (psycopg2 available via the postgres provider).
+- Added `record_dbt_results` BashOperator task to both `crime_batch_dag.py` (after `dbt_build`) and `divvy_stream_dag.py` (between `dbt_build` and `stop_stream`). Runs `python /opt/airflow/scripts/record_dbt_results.py`.
+- Mounted `./airflow/scripts:/opt/airflow/scripts` in the `x-airflow-common` anchor in `docker-compose.yml` so the recorder is available in all Airflow containers.
+- Rewired the Grafana "DBT tests" panel on `pipeline_health.json` (id 8) from a static `SELECT 59 AS dbt_tests_passing` to a real query against `observability.dbt_test_results` returning `passing`/`failing`/`warnings` counts for the latest invocation. Added field overrides so Passing renders green, Failing renders red (threshold ≥1), Warnings neutral. Retitled "DBT test outcomes (latest run)".
+- Stream `not_null` tests on `stg_station_status` and `fact_station_reads` (station_id, reported_at, is_renting, is_returning, num_bikes/docks_available) were already present from Phase 2.5 — no new tests needed there.
+
+### Errors & Fixes
+
+| # | Error | Root Cause | Fix |
+|---|---|---|---|
+| 1 | Recorder captured 0 tests despite `dbt build` reporting `TOTAL=60` | Filtered results on `r.get("resource_type") == "test"`, but dbt 1.11's `run_results.json` does NOT populate `resource_type` (it is `None` for every entry). The `name` field is also `None`. | Changed filter to `r.get("unique_id", "").startswith("test.")`. Extracted the human-readable name from `unique_id` by stripping the `test.chicago_crime.` prefix and trailing `.<hash>` suffix. |
+| 2 | Grafana dashboard JSON malformed after incremental edits to the DBT panel | Multiple `edit` ops dropped the `"fieldConfig": {` wrapper and the `"matcher": {` opener of the first override object, leaving `defaults`/`overrides` at the wrong nesting level. | Re-inserted the missing `"fieldConfig": {` wrapper and `"matcher": {` opener; validated with `python3 -c "import json; json.load(open(...))"`. Lesson: for deeply-nested JSON panel edits, rewrite the whole panel object in one op rather than patching field-by-field. |
+
+### Lessons Summary
+- **dbt 1.11 `run_results.json` has no `resource_type` field** — every entry has `resource_type: null`. Identify tests by `unique_id` prefix (`test.`), models by `model.`, seeds by `seed.`. The `name` field is also null; the readable name lives inside `unique_id` as `test.chicago_crime.<name>.<hash>`.
+- **dbt's `TOTAL=N` counts all resources, not just tests** — `TOTAL=60` = 1 seed + 7 models + 52 tests. The recorder correctly captured 52 tests; the "missing 8" were non-test resources. Don't confuse dbt's resource total with the test count.
+- **Edit JSON panel objects wholesale, not field-by-field** — the `edit` tool's line-range semantics make it easy to drop a closing brace or object opener when patching nested Grafana JSON. For panel rewrites, replace the entire panel object in one op and validate with `json.load` before moving on.
+- **Observability metadata gets its own schema** — `observability.dbt_test_results` lives in a dedicated schema (not `mart` or `raw`), created idempotently by the recorder. Keeps pipeline metadata out of the analytics mart and the raw landing zone.

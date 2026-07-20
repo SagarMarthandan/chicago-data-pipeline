@@ -226,6 +226,16 @@ with DAG(
             f'dbt build --project-dir {DBT_DIR} --profiles-dir {DBT_PROFILES_DIR}'
         ),
     )
+    # 4b. Record dbt test results into Postgres for Grafana observability
+    #     (Phase 3.2). Same recorder as crime_batch_dag — parses the
+    #     run_results.json written by dbt_build and upserts rows into
+    #     observability.dbt_test_results. Default trigger_rule (ALL_SUCCESS):
+    #     only records when dbt_build completes; cleanup tasks still run via
+    #     ALL_DONE downstream.
+    record_dbt_results = BashOperator(
+        task_id="record_dbt_results",
+        bash_command="python /opt/airflow/scripts/record_dbt_results.py",
+    )
 
     # 5. Stop Spark streaming job — cleanup.
     #
@@ -274,4 +284,4 @@ with DAG(
     # success/failure via trigger_rule=ALL_DONE. This guarantees no orphaned
     # background processes remain after a DAG run.
     create_topic >> start_producer >> start_stream >> wait_for_data >> dbt_build
-    dbt_build >> stop_stream >> stop_producer
+    dbt_build >> record_dbt_results >> stop_stream >> stop_producer

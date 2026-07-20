@@ -24,6 +24,8 @@ A chronological log of operations, files created, and structural changes made to
 - [2026-07-15 — Phase 2.4: Spark Structured Streaming](#2026-07-15--phase-24-spark-structured-streaming)
 - [2026-07-16 — Phase 2.5: DBT Stream Models](#2026-07-16--phase-25-dbt-stream-models)
 - [2026-07-16 — Phase 2.6: Airflow Stream DAG](#2026-07-16--phase-26-airflow-stream-dag)
+- [2026-07-18 — Phase 3.1: Grafana](#2026-07-18--phase-31-grafana)
+- [2026-07-20 — Phase 3.2: DBT Tests](#2026-07-20--phase-32-dbt-tests)
 ---
 
 ## 2026-07-08 — Project Setup & Migration
@@ -754,4 +756,58 @@ Phase 3 (Observability) requires Grafana dashboards for pipeline health and anal
 - Live data confirmed: 263,401 crime rows, 1,130 station reads, Airflow DAG runs (both DAGs succeeded)
 - Browser rendering verified (not just API): panels display live data after `jsonData.database` fix
 - DAG run order confirmed: stream first (divvy_stream), then crime batch — eliminates dbt_build race condition
+
+---
+
+## 2026-07-20 — Phase 3.2: DBT Tests
+
+### What Was Built
+- Custom singular DBT test for geographic bounds checking
+- DBT test results recorder (Python script) that parses `run_results.json` and writes to Postgres
+- New `record_dbt_results` Airflow task in both DAGs
+- Grafana "DBT tests" panel wired to real test outcomes (was a static placeholder)
+
+### Files Created
+
+| File | Purpose |
+|---|---|
+| `dbt/tests/assert_crime_in_chicago_bounds.sql` | Singular test — flags crime events with lat/long outside Chicago's bounding box (lat 41.64–42.03, lon -87.95–-87.52). Complements per-column range tests with a combined readable check. |
+| `airflow/scripts/record_dbt_results.py` | Parses `dbt/target/run_results.json` after `dbt build`, upserts one row per test into `observability.dbt_test_results`. Idempotent (keyed on invocation_id + test_name). Identifies tests by `unique_id` prefix `test.` (dbt 1.11 has no `resource_type` field). |
+| `docs/phases/phase-3.2-dbt-tests.md` | Phase completion doc. |
+
+### Files Modified
+
+| File | Change |
+|---|---|
+| `docker-compose.yml` | Added `./airflow/scripts:/opt/airflow/scripts` volume mount to `x-airflow-common` anchor (available to all Airflow containers). |
+| `airflow/dags/crime_batch_dag.py` | Added `record_dbt_results` BashOperator after `dbt_build`; updated dependency chain to `... >> dbt_build >> record_dbt_results`. |
+| `airflow/dags/divvy_stream_dag.py` | Added `record_dbt_results` BashOperator between `dbt_build` and `stop_stream`; updated dependency chain to `... >> dbt_build >> record_dbt_results >> stop_stream >> stop_producer`. |
+| `grafana/dashboards/pipeline_health.json` | Rewired panel id 8 ("DBT tests") from static `SELECT 59 AS dbt_tests_passing` to real query against `observability.dbt_test_results` returning passing/failing/warnings counts for the latest invocation. Added field overrides (Passing=green, Failing=red at ≥1, Warnings=neutral). Retitled "DBT test outcomes (latest run)". |
+
+### New Database Object
+
+| Object | Purpose |
+|---|---|
+| `observability` schema | Dedicated schema for pipeline observability metadata (separate from `raw`/`staging`/`mart`). Created idempotently by `record_dbt_results.py`. |
+| `observability.dbt_test_results` table | One row per test per dbt invocation. Columns: `invocation_id`, `generated_at`, `test_name`, `status`, `failures`, `execution_time`, `recorded_at`. PK: `(invocation_id, test_name)`. Queried by the Grafana panel. |
+
+### Key Design Decisions
+
+| Decision | Choice | Why |
+|---|---|---|
+| Custom recorder script vs. dbt-artifacts package | Custom 40-line script | No new dbt dependency; project keeps `packages.yml` small. The artifact we need (test outcomes) is tiny — a script is clearer than pulling a package that writes 10+ tables. |
+| Observability schema | Dedicated `observability` schema (not `mart` or `raw`) | Pipeline metadata ≠ analytics data. Keeps the mart clean for BI queries and the raw zone clean for ingested data. Created idempotently by the recorder (no init.sql change or volume wipe needed). |
+| Test identification | `unique_id.startswith("test.")` | dbt 1.11's `run_results.json` does not populate `resource_type` (it is `None` for every entry). The `unique_id` prefix is the reliable identifier. |
+| Test name extraction | Strip `test.chicago_crime.` prefix and trailing `.<hash>` from `unique_id` | The `name` field is `None` in dbt 1.11's run_results. The readable name lives inside `unique_id`. |
+| Recorder runs in Airflow container | Not in the dbt container | Airflow already has psycopg2 (via postgres provider). The dbt container is `python:3.11-slim` with only dbt installed. The recorder reads `run_results.json` from the shared `./dbt` mount. |
+| Panel shows latest invocation only | `WHERE generated_at = (SELECT max(generated_at) ...)` | The panel answers "is the latest dbt build healthy?" not "what's the history?". History is queryable directly from the table. |
+
+### Verification
+- `dbt build` (via divvy_stream DAG): PASS=60 WARN=0 ERROR=0 SKIP=0 TOTAL=60 (1 seed + 7 models + 52 tests)
+- `record_dbt_results` task succeeded in both DAGs (crime_batch + divvy_stream)
+- `observability.dbt_test_results` populated: 52 tests recorded, all status='pass'
+- Singular bounds test `assert_crime_in_chicago_bounds` ran and passed
+- Grafana panel query via `/api/ds/query` returns: passing=52, failing=0, warnings=0
+- Dashboard loads via `/api/dashboards/uid/pipeline-health` with updated panel title "DBT test outcomes (latest run)"
+- 3 dbt invocations recorded total (manual + divvy_stream DAG + crime_batch DAG)
 - Top community area by crime: Austin (12,700) — correct

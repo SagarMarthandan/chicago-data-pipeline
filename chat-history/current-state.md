@@ -1,6 +1,6 @@
 # Current State — Handoff Document
 
-> **Read this first in a new session.** This file is the handoff: current state, active decisions, and next steps. Last updated: 2026-07-18 (end of session — Phase 3.1 Grafana COMPLETE, Phase 3.2 DBT tests NEXT).
+> **Read this first in a new session.** This file is the handoff: current state, active decisions, and next steps. Last updated: 2026-07-20 (end of session — Phase 3.2 DBT tests COMPLETE, Phase 3.3 Airflow robustness NEXT).
 
 ---
 
@@ -10,7 +10,7 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 
 - **Repo:** `~/chicago-data-pipeline/` (WSL, Ubuntu on Windows 10)
 - **Git:** initialized on `main`, no commits yet (user commits manually)
-- **Phase:** 1 COMPLETE. Phase 2 COMPLETE (2.1–2.6). Phase 3 STARTED (3.1 Grafana ✅, 3.2 DBT tests NEXT, 3.3 Airflow SLAs LOCKED, 3.4 Verification LOCKED). Phase 4 locked. Phase 5 locked (plan written in chicago-pipeline-plan.md).
+- **Phase:** 1 COMPLETE. Phase 2 COMPLETE (2.1–2.6). Phase 3 IN PROGRESS (3.1 Grafana ✅, 3.2 DBT tests ✅, 3.3 Airflow robustness NEXT, 3.4 Verification LOCKED). Phase 4 locked. Phase 5 locked (plan written in chicago-pipeline-plan.md).
 - **AI mode:** AI-writes-code (user said "you write it" — explicit mode switch from Socratic)
 
 ## Tech Stack
@@ -166,7 +166,7 @@ All Phase 1 sub-phases verified end-to-end. Cold start → DAG run → 4 tasks s
 ### Phase 2 Gate — MET
 Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming → Postgres → DBT → queryable marts. Analytics query "avg bikes available per station" returns correct results.
 
-## Phase 3 — IN PROGRESS (3.1 done, 3.2 next)
+## Phase 3 — IN PROGRESS (3.1 done, 3.2 done, 3.3 next)
 
 ### Phase 3.1 — Grafana (COMPLETE)
 - Added `grafana` service to `docker-compose.yml` (`grafana/grafana:12.4.0`, port 3000, `grafana_data` volume, anonymous Viewer access)
@@ -175,11 +175,21 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
   - `airflow-metadata` (uid: `airflow-metadata`) → `airflow_metadata` database (dag_run, task_instance)
   - **Why two:** Postgres databases are isolated — can't cross-query without `postgres_fdw`. One datasource per DB.
 - Two dashboards provisioned via `grafana/provisioning/dashboards/dashboards.yml`:
-  - `pipeline_health.json` (10 panels): row counts, stream ingestion rate, stream freshness, latest Kafka msg, DBT tests (static placeholder), Airflow DAG runs + task instances
+  - `pipeline_health.json` (10 panels): row counts, stream ingestion rate, stream freshness, latest Kafka msg, DBT test outcomes (LIVE — wired in 3.2), Airflow DAG runs + task instances
   - `crime_divvy_analysis.json` (6 panels): top community areas by crime, crime types, avg vehicles per station, station availability heatmap, crime-vs-ridership proxy (THE DRIVING QUESTION), crime heatmap
 - **4 errors hit:** (1) Go-template `{{.VAR}}` syntax in datasource YAML → Grafana uses `$VAR`; (2) env vars not in container after `restart` → need `up -d` to recreate; (3) cross-database query failed → added second datasource; (4) `jsonData.database` missing → browser panels showed "No data" despite API queries working (Grafana 12.4's Postgres plugin reads DB name from `jsonData.database`, not top-level `database:` field)
 - **DAG run order: stream first, then crime batch** — `crime_batch`'s `dbt_build` builds ALL models including `stg_station_status` (depends on `raw.station_status` from `divvy_stream`). Run `divvy_stream` first to eliminate the race condition. Pre-existing design issue to address in Phase 3.3.
 - Verified: Grafana healthy (v12.4.0), both datasources + dashboards loaded, all 16 panel queries return status 200 against live data (263,401 crime rows, 1,130 station reads, Airflow DAG runs). Browser rendering verified (not just API).
+
+### Phase 3.2 — DBT Tests (COMPLETE)
+- Created `dbt/tests/assert_crime_in_chicago_bounds.sql` — singular test: flags crime events with lat/long outside Chicago's bounding box (lat 41.64–42.03, lon -87.95–-87.52). Complements per-column range tests with a combined readable check.
+- Created `airflow/scripts/record_dbt_results.py` — parses `dbt/target/run_results.json` after `dbt build`, upserts one row per test into `observability.dbt_test_results` (new schema, created idempotently). Identifies tests by `unique_id` prefix `test.` (dbt 1.11 has no `resource_type` field; `name` is also null — readable name extracted from `unique_id`).
+- Added `record_dbt_results` BashOperator task to both DAGs (after `dbt_build`). Mounted `./airflow/scripts:/opt/airflow/scripts` in `docker-compose.yml` `x-airflow-common` anchor.
+- Rewired Grafana "DBT tests" panel (id 8) from static `SELECT 59 AS dbt_tests_passing` to real query against `observability.dbt_test_results` returning passing/failing/warnings counts for the latest invocation. Field overrides: Passing=green, Failing=red (≥1), Warnings=neutral. Retitled "DBT test outcomes (latest run)".
+- Stream `not_null` tests on `stg_station_status` + `fact_station_reads` were already present from Phase 2.5 — no new tests needed there.
+- New DB object: `observability` schema + `observability.dbt_test_results` table (PK: invocation_id + test_name). Created by the recorder, not by init.sql.
+- **2 errors hit:** (1) Recorder captured 0 tests — filtered on `resource_type == "test"` but dbt 1.11 doesn't populate that field (None for every entry); fixed by filtering on `unique_id.startswith("test.")` and extracting name from `unique_id`. (2) Grafana dashboard JSON malformed after incremental panel edits — dropped `fieldConfig` wrapper + `matcher` opener; fixed by re-inserting wrappers + `json.load` validation. Lesson: edit JSON panel objects wholesale, not field-by-field.
+- Verified: `dbt build` PASS=60 (1 seed + 7 models + 52 tests), `record_dbt_results` task succeeded in both DAGs, 52 tests recorded all status='pass', singular bounds test passed, Grafana panel query returns passing=52/failing=0/warnings=0, dashboard loads with updated panel.
 
 ## Files Created (full repo structure)
 
@@ -190,14 +200,16 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
 ├── .vscode/settings.json
 ├── AGENTS.md
 ├── README.md
-├── docker-compose.yml        ← 11 services + spark_checkpoints + grafana_data volumes (Phase 1 + 2 + 3.1), YAML anchors
+├── docker-compose.yml        ← 11 services + spark_checkpoints + grafana_data volumes (Phase 1 + 2 + 3.1 + 3.2), YAML anchors
 ├── airflow/
 │   ├── Dockerfile
 │   ├── passwords.json
 │   ├── requirements.txt      ← now includes kafka-python
+│   ├── scripts/
+│   │   └── record_dbt_results.py ← Phase 3.2 — parses dbt run_results.json → observability.dbt_test_results
 │   ├── dags/
-│   │   ├── crime_batch_dag.py
-│   │   └── divvy_stream_dag.py ← Phase 2.6 — streaming lifecycle DAG
+│   │   ├── crime_batch_dag.py    ← Phase 3.2 — added record_dbt_results task
+│   │   └── divvy_stream_dag.py   ← Phase 2.6 + 3.2 — streaming lifecycle DAG + record_dbt_results task
 │   └── dbt_profiles/profiles.yml
 ├── spark/
 │   ├── Dockerfile            ← apache/spark:3.5.1 + JDBC + Kafka connector + entrypoint (Phase 2.6)
@@ -212,7 +224,7 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
 │   │   ├── datasources/postgres.yml  ← 2 datasources (chicago-analytics + airflow-metadata)
 │   │   └── dashboards/dashboards.yml ← dashboard provider
 │   └── dashboards/
-│       ├── pipeline_health.json      ← 10-panel pipeline health dashboard
+│       ├── pipeline_health.json      ← 10-panel pipeline health dashboard (DBT panel wired live in 3.2)
 │       └── crime_divvy_analysis.json ← 6-panel analysis dashboard
 ├── kafka/                    ← Phase 2.3
 │   └── producers/
@@ -235,6 +247,8 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
 │   │       ├── fact_station_reads.sql   ← NEW (Phase 2.5)
 │   │       └── schema.yml
 │   ├── packages.yml
+│   ├── tests/
+│   │   └── assert_crime_in_chicago_bounds.sql ← Phase 3.2 — singular geographic bounds test
 │   └── seeds/community_areas.csv
 ├── data/
 │   └── raw/crime/crime_2023.parquet
@@ -252,17 +266,12 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
     │   ├── data-sources.md   ← expanded with full GBFS schema (Phase 2.1)
     │   └── mermaid-syntax.md
     ├── learning-protocol.md
-    ├── operations-performed.md ← TOC + entries through Phase 2.6
+    ├── operations-performed.md ← TOC + entries through Phase 3.2
     ├── phases/
-    │   └── phase-2.6-airflow-stream-dag.md  ← NEW (Phase 2.6)
-    │   └── phase-3.1-grafana.md             ← NEW (Phase 3.1)
     │   ├── phase-1.1-docker.md through phase-1.6-verification.md
-    │   ├── phase-2.1-gbfs-data-source.md
-    │   ├── phase-2.2-kafka.md
-    │   ├── phase-2.3-divvy-producer.md
-    │   ├── phase-2.4-spark-streaming.md
-    │   ├── phase-2.5-dbt-stream-models.md
-    │   └── phase-2.6-airflow-stream-dag.md  ← NEW (Phase 2.6)
+    │   ├── phase-2.1-gbfs-data-source.md through phase-2.6-airflow-stream-dag.md
+    │   ├── phase-3.1-grafana.md             ← Phase 3.1
+    │   └── phase-3.2-dbt-tests.md           ← NEW (Phase 3.2)
     └── conventions/
         ├── airflow.md, dbt.md, docker.md, spark.md
 ```
@@ -271,13 +280,16 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
 
 1. **Phase 3: Observability** — Grafana dashboards + DBT tests + Airflow SLAs
    - **3.1 Grafana: COMPLETE** ✅ — grafana service + 2 datasources + 2 dashboards (Pipeline Health + Crime + Divvy Analysis). All 16 panel queries verified against live data.
-   - **3.2 DBT tests: NEXT** — Add custom singular test `assert_crime_in_chicago_bounds.sql` + stream not_null tests. Wire the DBT tests Grafana panel to actual test results (currently static placeholder).
-   - **3.3 Airflow robustness: LOCKED** — Add retries, SLAs, freshness sensor, on_failure_callback.
+   - **3.2 DBT tests: COMPLETE** ✅ — singular bounds test `assert_crime_in_chicago_bounds.sql` + `record_dbt_results.py` recorder writing to `observability.dbt_test_results` + `record_dbt_results` task in both DAGs + Grafana DBT panel wired to live test outcomes (passing=52, failing=0, warnings=0).
+   - **3.3 Airflow robustness: NEXT** — Add retries, SLAs, freshness sensor, on_failure_callback. Also address the crime_batch/divvy_stream DAG race condition (separate batch/stream dbt models or add a sensor).
    - **3.4 Verification: LOCKED** — Break the pipeline and confirm observability catches it.
    - Requires: Phase 2 complete (streaming pipeline works end-to-end) ✅ met
+   - **Data scope note:** Crime data is 2023 only (263K rows, scoped for local Postgres). Divvy is 2026 live only. No temporal overlap — the driving question (crime vs ridership) can't be answered until Phase 4. Do NOT backfill more years now — local Postgres isn't the right home for 8M rows. Backfilling is a Phase 4 concern (BigQuery handles scale trivially). The real fix for the driving question is ingesting Divvy trip history from the Chicago Data Portal (separate from GBFS) — that has years of data to correlate with crime. Deferred to Phase 4.
+   - **WSL space constraint:** User reports WSL already using ~40GB. This is a driver for Phase 4 (move heavy data to BigQuery, keep WSL for code + orchestration only). Do not add large datasets to local Postgres.
 2. **Phase 4: Cloud** — Terraform → BigQuery + Airbyte
    - Requires: Phase 3 complete (observability in place before migrating to cloud)
    - New: Terraform infrastructure, BigQuery warehouse, Airbyte ingestion
+   - **Why now:** WSL space constraint (~40GB used) + need for full crime history (8M rows) + Divvy trip history for the driving question. BigQuery free tier handles this trivially; local Postgres doesn't.
 3. **Phase 5: CI/CD** — GitHub Actions + GHCR
    - Requires: Phase 4 complete
    - New: Branch protection (dev/prod), PR checks (ruff + dbt parse + compose validate), versioned releases (semantic versioning), image push to GHCR
@@ -285,7 +297,7 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
    - **Future task (after Phase 5):** Comprehensive documentation restructuring — reorganize all docs for portfolio readability, consolidate redundant content, ensure consistent formatting across changelog/operations/phases/knowledge. Discuss approach when we get there.
    - Plan added to `chicago-pipeline-plan.md` (sections 5.1–5.6)
 
-- **Phase gates:** Phase 1 COMPLETE. Phase 2 COMPLETE (2.1–2.6 done). Phase 3 IN PROGRESS (3.1 Grafana done, 3.2 DBT tests next). Phase 4 locked. Phase 5 locked. Do NOT skip ahead.
+- **Phase gates:** Phase 1 COMPLETE. Phase 2 COMPLETE (2.1–2.6 done). Phase 3 IN PROGRESS (3.1 Grafana done, 3.2 DBT tests done, 3.3 Airflow robustness next). Phase 4 locked. Phase 5 locked. Do NOT skip ahead.
 - **Learning protocol:** Socratic by default. User must say "write the code" to get code. Currently in AI-writes-code mode.
 - **Three-doc system:** `changelog.md` (errors), `docs/knowledge/` (reference, one file per topic), `docs/operations-performed.md` (audit trail). Update all three after every change.
 - **Phase-completion docs:** After each sub-phase is verified, create `docs/phases/phase-X.Y-<name>.md` from `TEMPLATE.md`. Include one high-level mermaid diagram + pointer to `docs/knowledge/architecture.md` for details.

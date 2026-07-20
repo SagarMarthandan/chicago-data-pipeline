@@ -545,7 +545,7 @@
         "type": "postgres",
         "uid": "chicago-analytics"
       },
-      "description": "DBT test results from the latest dbt build. Queries the dbt test artifact table if available; otherwise shows a static count. In Phase 3.2 this will be wired to actual test results.",
+      "description": "DBT test outcomes from the latest dbt build. Sourced from observability.dbt_test_results, written by the record_dbt_results Airflow task after every `dbt build` (Phase 3.2). passing = tests with status 'pass'; failing = status 'fail'; warnings = status 'warn'. If the panel shows no data, no dbt build has been recorded yet — trigger crime_batch or divvy_stream.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -556,18 +556,83 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
-                "value": null
-              },
-              {
                 "color": "green",
-                "value": 50
+                "value": null
               }
             ]
           },
           "unit": "none"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "failing"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 1
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "displayName",
+                "value": "Failing"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "passing"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 1
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "displayName",
+                "value": "Passing"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "warnings"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Warnings"
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
@@ -601,11 +666,11 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT 59 AS dbt_tests_passing;",
+          "rawSql": "SELECT\n  count(*) FILTER (WHERE status = 'pass') AS passing,\n  count(*) FILTER (WHERE status = 'fail') AS failing,\n  count(*) FILTER (WHERE status = 'warn') AS warnings\nFROM observability.dbt_test_results\nWHERE generated_at = (SELECT max(generated_at) FROM observability.dbt_test_results);",
           "refId": "A"
         }
       ],
-      "title": "DBT tests passing (static — wire to artifacts in 3.2)",
+      "title": "DBT test outcomes (latest run)",
       "type": "stat"
     },
     {

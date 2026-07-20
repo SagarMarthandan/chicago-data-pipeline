@@ -114,6 +114,15 @@ with DAG(
             f'dbt build --project-dir {DBT_DIR} --profiles-dir {DBT_PROFILES_DIR}'
         ),
     )
+    # 4b. Record dbt test results into Postgres for Grafana observability
+    #     (Phase 3.2). `dbt build` writes target/run_results.json; this task
+    #     parses it and upserts one row per test into observability.dbt_test_results,
+    #     which the Grafana "DBT tests" panel queries. Runs in the Airflow
+    #     container (psycopg2 available via the postgres provider).
+    record_dbt_results = BashOperator(
+        task_id="record_dbt_results",
+        bash_command=f"python /opt/airflow/scripts/record_dbt_results.py",
+    )
 
     # Task dependencies — linear pipeline
-    download_crime >> clear_dbt_schemas >> spark_crime_batch >> dbt_build
+    download_crime >> clear_dbt_schemas >> spark_crime_batch >> dbt_build >> record_dbt_results
