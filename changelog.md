@@ -32,6 +32,7 @@ A running log of changes, errors, and fixes throughout the project. Use this to 
 - [2026-07-16 — Phase 2.6: Airflow Stream DAG](#2026-07-16--phase-26-airflow-stream-dag)
 - [2026-07-18 — Phase 3.1: Grafana](#2026-07-18--phase-31-grafana)
 - [2026-07-20 — Phase 3.2: DBT Tests](#2026-07-20--phase-32-dbt-tests)
+- [2026-07-20 — Phase 3.3: Airflow Robustness](#2026-07-20--phase-33-airflow-robustness)
 
 ---
 
@@ -733,3 +734,31 @@ No errors encountered. All 59 DBT tests passed on first run.
 - **dbt's `TOTAL=N` counts all resources, not just tests** — `TOTAL=60` = 1 seed + 7 models + 52 tests. The recorder correctly captured 52 tests; the "missing 8" were non-test resources. Don't confuse dbt's resource total with the test count.
 - **Edit JSON panel objects wholesale, not field-by-field** — the `edit` tool's line-range semantics make it easy to drop a closing brace or object opener when patching nested Grafana JSON. For panel rewrites, replace the entire panel object in one op and validate with `json.load` before moving on.
 - **Observability metadata gets its own schema** — `observability.dbt_test_results` lives in a dedicated schema (not `mart` or `raw`), created idempotently by the recorder. Keeps pipeline metadata out of the analytics mart and the raw landing zone.
+
+---
+
+## 2026-07-20 — Phase 3.3: Airflow Robustness
+
+### Changes
+- Created `airflow/dags/callbacks.py` — shared `on_failure_callback` that logs structured failure context (dag_id, task_id, run_id, try_number, exception) to Airflow task logs. Wired into both DAGs via `default_args["on_failure_callback"]`.
+- Added `SqlSensor` (`wait_for_stream_data`) to `crime_batch_dag.py` — gates `dbt_build` on `raw.station_status` existing. Fixes the race condition where `dim_date` (which spans both crime + station sources) causes `dbt build` to fail if `divvy_stream` hasn't run yet. The sensor makes the previously implicit dependency explicit. Uses `to_regclass('raw.station_status')` with `mode="reschedule"`, 60s poke interval, 1hr timeout.
+- Updated `default_args` in both DAGs: `retries=3`, `retry_delay=timedelta(minutes=5)`, `on_failure_callback=on_failure_callback`.
+- Added `execution_timeout=timedelta(minutes=30)` to `dbt_build` in both DAGs. (Originally tried `sla=` but Airflow 3.0 removed the SLA feature — see errors below.)
+- Set `retries=0` on cleanup tasks (`stop_stream`, `stop_producer`) in `divvy_stream_dag.py` — retrying cleanup is pointless.
+- Added `AIRFLOW_CONN_POSTGRES_DEFAULT` env var to `docker-compose.yml` `x-airflow-common` anchor — the SqlSensor needs a Postgres connection to query the warehouse. Format: `postgresql://user:pass@postgres:5432/db`.
+- Added "Failed tasks (last 7 days)" panel (id 11) to `pipeline_health.json` — queries `task_instance` for failed/upstream_failed states. Originally planned as an SLA misses panel but Airflow 3.0 removed SLA tracking (see errors below).
+
+### Errors & Fixes
+
+| # | Error | Root Cause | Fix |
+|---|---|---|---|
+| 1 | SqlSensor `wait_for_stream_data` failed: `'str' object has no attribute 'fetchone'` | Used `success=lambda result: result.fetchone()[0] is not None` — assumed the callback receives a DB cursor. Airflow 3.0's `SqlSensor.poke` calls `hook.get_records(sql)` → list of rows, then passes `records[0]` (the first row tuple) to the success callable, not a cursor. | Changed to `success=lambda row: row[0] is not None`. The row is a 1-tuple like `('raw.station_status',)` or `(None,)`. |
+| 2 | `sla=timedelta(minutes=30)` triggers deprecation warning: "The SLA feature is removed in Airflow 3.0, to be replaced with a new implementation in >=3.1" | Airflow 3.0 removed the entire SLA subsystem. The `sla=` parameter is accepted but is a no-op — no SLA misses are recorded in `dag_warning` or anywhere else. | Replaced `sla=` with `execution_timeout=timedelta(minutes=30)` in both DAGs. `execution_timeout` actually fails the task if it exceeds the limit. Changed the Grafana panel from "SLA misses" to "Failed tasks" (queries `task_instance` for failed states). |
+| 3 | Stuck DAG run blocked new runs (`max_active_runs=1`) | The failed `wait_for_stream_data` task was `up_for_retry` (3 retries with 5min delay = 15min of retries). The DAG run stayed `running` while retrying, blocking the new triggered run which stayed `queued`. | Manually marked the stuck run as `failed` in the metadata DB. The new run then started immediately. In production, you'd wait for retries to exhaust or reduce retry count for sensor tasks. |
+
+### Lessons Summary
+- **Airflow 3.0 removed the SLA feature** — `sla=` parameter triggers a deprecation warning and is a no-op. No SLA misses are recorded in `dag_warning`. Use `execution_timeout=` instead — it actually fails the task if it exceeds the limit. SLA is planned to return in Airflow 3.1+.
+- **Airflow 3.0 SqlSensor success callback receives a row, not a cursor** — `SqlSensor.poke` calls `hook.get_records(sql)` → list of rows, then passes `records[0]` to the success callable. The callable receives a single row (tuple), not a cursor object. Don't call `.fetchone()` on it.
+- **Sensors + `max_active_runs=1` can block new runs** — a sensor in `up_for_retry` state keeps the DAG run in `running` state, which blocks new runs if `max_active_runs=1`. For sensor tasks, consider fewer retries or shorter retry delays to avoid long blocking periods.
+- **Make implicit cross-DAG dependencies explicit with sensors** — `dim_date` spans both crime + station sources, creating an implicit dependency between `crime_batch` and `divvy_stream`. The SqlSensor makes this explicit: `crime_batch` waits for `raw.station_status` to exist before building marts. This is cleaner than splitting dbt models (batch-only vs stream-only) because `dim_date` legitimately needs both sources.
+- **`AIRFLOW_CONN_<CONN_ID>` env var pattern** — Airflow auto-creates connections from env vars. `AIRFLOW_CONN_POSTGRES_DEFAULT=postgresql://user:pass@host:port/db` creates a connection with `conn_id="postgres_default"`. No need to use the Airflow UI or CLI.

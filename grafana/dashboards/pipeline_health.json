@@ -678,6 +678,74 @@
         "type": "postgres",
         "uid": "airflow-metadata"
       },
+      "description": "Failed Airflow tasks in the last 7 days (Phase 3.3). Airflow 3.0 removed the SLA feature (sla= parameter is a no-op), so this panel tracks task failures instead — which includes execution_timeout failures. A non-zero count means tasks are failing or timing out. Check the task instances table below for details.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 22
+      },
+      "id": 11,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto"
+      },
+      "pluginVersion": "12.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "airflow-metadata"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT count(*) AS failed_tasks FROM task_instance WHERE state IN ('failed', 'upstream_failed') AND start_date > NOW() - INTERVAL '7 days';",
+          "refId": "A"
+        }
+      ],
+      "title": "Failed tasks (last 7 days)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "airflow-metadata"
+      },
       "description": "Airflow DAG run status counts from the airflow_metadata database. Joins dag_run + task_instance to show recent run outcomes.",
       "fieldConfig": {
         "defaults": {
@@ -867,7 +935,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 22
+        "y": 30
       },
       "id": 10,
       "options": {

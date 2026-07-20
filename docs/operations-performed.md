@@ -26,6 +26,7 @@ A chronological log of operations, files created, and structural changes made to
 - [2026-07-16 — Phase 2.6: Airflow Stream DAG](#2026-07-16--phase-26-airflow-stream-dag)
 - [2026-07-18 — Phase 3.1: Grafana](#2026-07-18--phase-31-grafana)
 - [2026-07-20 — Phase 3.2: DBT Tests](#2026-07-20--phase-32-dbt-tests)
+- [2026-07-20 — Phase 3.3: Airflow Robustness](#2026-07-20--phase-33-airflow-robustness)
 ---
 
 ## 2026-07-08 — Project Setup & Migration
@@ -811,3 +812,54 @@ Phase 3 (Observability) requires Grafana dashboards for pipeline health and anal
 - Dashboard loads via `/api/dashboards/uid/pipeline-health` with updated panel title "DBT test outcomes (latest run)"
 - 3 dbt invocations recorded total (manual + divvy_stream DAG + crime_batch DAG)
 - Top community area by crime: Austin (12,700) — correct
+
+---
+
+## 2026-07-20 — Phase 3.3: Airflow Robustness
+
+### What Was Built
+- SqlSensor in `crime_batch` that fixes the race condition with `divvy_stream` (waits for `raw.station_status` to exist before `dbt_build`)
+- Shared `on_failure_callback` that logs structured failure context to Airflow logs
+- Retries (3x with 5min delay) on all non-cleanup tasks in both DAGs
+- `execution_timeout=30min` on `dbt_build` tasks in both DAGs
+- `retries=0` on cleanup tasks (stop_stream, stop_producer) — don't retry cleanup
+- Airflow Postgres connection (`postgres_default`) via env var for the SqlSensor
+- Grafana "Failed tasks (last 7 days)" panel on Pipeline Health dashboard
+
+### Files Created
+
+| File | Purpose |
+|---|---|
+| `airflow/dags/callbacks.py` | Shared `on_failure_callback` — logs dag_id, task_id, run_id, try_number, exception to Airflow task logs. Imported by both DAGs. |
+| `docs/phases/phase-3.3-airflow-robustness.md` | Phase completion doc. |
+
+### Files Modified
+
+| File | Change |
+|---|---|
+| `docker-compose.yml` | Added `AIRFLOW_CONN_POSTGRES_DEFAULT` env var to `x-airflow-common` anchor. SqlSensor uses this connection to query the analytics warehouse. |
+| `airflow/dags/crime_batch_dag.py` | Added `SqlSensor` (`wait_for_stream_data`) between `spark_crime_batch` and `dbt_build`. Updated `default_args` (retries=3, retry_delay=5min, on_failure_callback). Added `execution_timeout=30min` on `dbt_build`. Updated dependency chain. |
+| `airflow/dags/divvy_stream_dag.py` | Updated `default_args` (retries=3, retry_delay=5min, on_failure_callback). Added `execution_timeout=30min` on `dbt_build`. Set `retries=0` on `stop_stream` + `stop_producer`. |
+| `grafana/dashboards/pipeline_health.json` | Added panel id 11 "Failed tasks (last 7 days)" — queries `task_instance` for failed/upstream_failed states. Moved task instances table (id 10) down to y=30. |
+
+### Key Design Decisions
+
+| Decision | Choice | Why |
+|---|---|---|
+| Race condition fix: sensor vs. split dbt models | SqlSensor | `dim_date` legitimately spans both sources (crime + station). Splitting dbt models would break `dim_date`'s UNION ALL. The sensor makes the implicit dependency explicit without splitting models. |
+| `execution_timeout` vs `sla=` | `execution_timeout` | Airflow 3.0 removed the SLA feature — `sla=` is a no-op with a deprecation warning. `execution_timeout` actually fails the task if it exceeds the limit. |
+| Grafana panel: failed tasks vs SLA misses | Failed tasks | Airflow 3.0 doesn't record SLA misses in `dag_warning` (SLA feature removed). Failed tasks (including timeout failures) are queryable from `task_instance`. |
+| `on_failure_callback` vs email alerts | Callback (logging) | No email server in local dev. The callback logs structured failure context to Airflow logs — visible in the UI. In production, this is where Slack/email/PagerDuty would go. |
+| `retries=0` on cleanup tasks | Don't retry cleanup | `stop_stream` and `stop_producer` are best-effort cleanup with `trigger_rule=ALL_DONE`. If `kill` fails, the process is already gone. Retrying adds delay without value. |
+| SqlSensor `mode="reschedule"` | Not `mode="poke"` | The sensor may wait up to 1hr for `divvy_stream` to run. `reschedule` releases the worker slot between pokes; `poke` holds the slot for the entire wait. |
+
+### Verification
+- Both DAGs parse successfully (Airflow `dags list` shows crime_batch + divvy_stream)
+- `postgres_default` connection created via env var (verified with `airflow connections get`)
+- `callbacks.py` imports successfully from both DAGs
+- `divvy_stream` DAG run: all 8 tasks succeeded (create_topic → start_producer → start_stream → wait_for_data → dbt_build → record_dbt_results → stop_stream → stop_producer)
+- `crime_batch` DAG run: all 6 tasks succeeded (download_crime → clear_dbt_schemas → spark_crime_batch → wait_for_stream_data → dbt_build → record_dbt_results)
+- SqlSensor `wait_for_stream_data` passed immediately (raw.station_status exists from prior divvy_stream run)
+- Grafana dashboard loads with 11 panels (was 10 — added "Failed tasks (last 7 days)")
+- Failed tasks panel query returns failed_tasks=1 (from the earlier failed SqlSensor attempt before the fix)
+- `on_failure_callback` wired via `default_args` — fires when a task exhausts all 3 retries

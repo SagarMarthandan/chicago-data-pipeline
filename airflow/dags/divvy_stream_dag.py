@@ -48,6 +48,8 @@ from airflow import DAG
 from airflow.operators.bash import BashOperator
 from airflow.utils.trigger_rule import TriggerRule
 
+from callbacks import on_failure_callback
+
 # ============================================================
 # Configuration
 # ============================================================
@@ -82,10 +84,11 @@ DBT_IMAGE = "chicago-data-pipeline-dbt:latest"
 
 default_args = {
     "owner": "chicago-pipeline",
-    "retries": 1,  # streaming lifecycle — retry once on transient failures
-    "retry_delay": timedelta(minutes=2),
-    "email_on_failure": False,  # enable in Phase 3
+    "retries": 3,  # Phase 3.3 — transient failures (Kafka blips, Spark startup) benefit from retries
+    "retry_delay": timedelta(minutes=5),
+    "email_on_failure": False,  # no email server; on_failure_callback logs instead
     "depends_on_past": False,
+    "on_failure_callback": on_failure_callback,  # Phase 3.3 — structured failure logging
 }
 
 # ============================================================
@@ -210,9 +213,10 @@ with DAG(
             'echo "ERROR: No new data after 5 minutes" && exit 1'
         ),
     )
-    #    Builds stg_station_status (dedup on Kafka coordinates) and
-    #    fact_station_reads (one row per station poll with date_key FK).
-    #    All 59 tests run as part of dbt build.
+    #    All 52 tests run as part of dbt build.
+    #    execution_timeout: 30 minutes (Phase 3.3). Airflow 3.0 removed the
+    #    sla= parameter (deprecation warning, no-op). execution_timeout actually
+    #    fails the task if it exceeds the limit. dbt build typically <10min.
     dbt_build = BashOperator(
         task_id="dbt_build",
         bash_command=(
@@ -225,6 +229,7 @@ with DAG(
             f'{DBT_IMAGE} '
             f'dbt build --project-dir {DBT_DIR} --profiles-dir {DBT_PROFILES_DIR}'
         ),
+        execution_timeout=timedelta(minutes=30),  # Phase 3.3 — replaces removed sla=
     )
     # 4b. Record dbt test results into Postgres for Grafana observability
     #     (Phase 3.2). Same recorder as crime_batch_dag — parses the
@@ -238,10 +243,6 @@ with DAG(
     )
 
     # 5. Stop Spark streaming job — cleanup.
-    #
-    #    trigger_rule=ALL_DONE ensures this runs even if upstream tasks fail.
-    #    Spark handles SIGTERM gracefully (stops the streaming query, saves
-    #    checkpoint state to the volume).
     stop_stream = BashOperator(
         task_id="stop_stream",
         bash_command=(
@@ -255,6 +256,7 @@ with DAG(
             'fi'
         ),
         trigger_rule=TriggerRule.ALL_DONE,
+        retries=0,  # cleanup — don't retry. If kill fails, the process is already gone.
     )
 
     # 6. Stop Kafka producer — cleanup.
@@ -275,6 +277,7 @@ with DAG(
             'fi'
         ),
         trigger_rule=TriggerRule.ALL_DONE,
+        retries=0,  # cleanup — don't retry. No-op in --once mode anyway.
     )
 
     # Task dependencies — lifecycle pipeline:

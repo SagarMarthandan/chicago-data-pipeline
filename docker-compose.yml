@@ -70,6 +70,10 @@ x-airflow-common: &airflow-common
     # Used by the ingestion script (download_crime.py).
     SOCRATA_APP_TOKEN: ${SOCRATA_APP_TOKEN}
     POSTGRES_DB: ${POSTGRES_DB}
+    # Airflow Postgres connection — used by SqlSensor (Phase 3.3) to query
+    # the analytics warehouse. Format: AIRFLOW_CONN_<CONN_ID>=<uri>.
+    # Conn ID "postgres_default" → SqlSensor(conn_id="postgres_default").
+    AIRFLOW_CONN_POSTGRES_DEFAULT: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
 
     # Execution API server URL — the scheduler needs to reach the API server
     # to serialize DAGs. Inside the scheduler container, localhost:8080 is NOT
