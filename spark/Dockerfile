@@ -70,6 +70,25 @@ RUN curl -sL https://repo1.maven.org/maven2/org/apache/spark/spark-sql-kafka-0-1
     -o /opt/spark/jars/commons-pool2-2.11.1.jar
 
 # ============================================================
+# GCS connector (Phase 4.3 — Spark writes to Google Cloud Storage)
+# ============================================================
+# The GCS connector lets Spark read/write gs:// paths as if they were
+# HDFS. Without it, Spark can't resolve gs:// URIs.
+#
+# This is Google's official Hadoop GCS connector (hadoop3 variant
+# for Hadoop 3.x which apache/spark:3.5.1 uses).
+#
+# Auth: the connector picks up GOOGLE_APPLICATION_CREDENTIALS env var
+# (set in docker-compose.yml, pointing to the mounted service account
+# key file). No additional Spark config needed for service account auth.
+#
+# Alternative: --packages com.google.cloud.bigdataoss:gcs-connector:hadoop3-2.2.x
+# at spark-submit time. Baking is more reliable (works offline, no Maven).
+# ============================================================
+RUN curl -sL https://storage.googleapis.com/hadoop-lib/gcs/gcs-connector-hadoop3-latest.jar \
+    -o /opt/spark/jars/gcs-connector-hadoop3-latest.jar
+
+# ============================================================
 # Entrypoint — fix checkpoint volume ownership on every start
 # ============================================================
 # Named volumes mount as root:root, but Spark runs as spark.

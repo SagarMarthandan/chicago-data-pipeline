@@ -233,12 +233,38 @@ Terraform provisions the cloud resources (BigQuery datasets + GCS bucket) inside
 
 What Terraform created (verified 2026-07-21): `google_bigquery_dataset.raw`, `google_bigquery_dataset.mart`, `google_storage_bucket.data_lake`.
 
-## What's Next (Phase 4.3 — Architecture change)
+## Phase 4.3 — Pipeline on GCP (DONE 2026-07-21)
 
-GCP containers exist. Next: make the pipeline use them.
-- Spark writes to GCS (Parquet) instead of Postgres
-- Airbyte replaces `download_crime.py` (Socrata source → BigQuery destination)
-- DBT `profiles.yml` switches Postgres → BigQuery adapter
-- Streaming path decision: keep on Postgres (small data) or move to BigQuery via `foreachBatch` → GCS → BigQuery load job
+The batch pipeline now runs on GCP: Spark → GCS (Parquet) → `bq load` → BigQuery → DBT. Streaming stays on local Postgres.
+
+### bq CLI vs Python client auth
+The `bq` CLI (part of gcloud SDK) and the `google-cloud-bigquery` Python library use **different auth mechanisms**:
+- **Python client**: reads `GOOGLE_APPLICATION_CREDENTIALS` env var automatically. No extra setup.
+- **bq CLI**: uses gcloud's credential store. Needs `gcloud auth activate-service-account --key-file=...` first. Does NOT read the env var.
+
+In the Airflow DAG, the `bq_load_crime` task runs both:
+```bash
+gcloud auth activate-service-account --key-file=$GOOGLE_APPLICATION_CREDENTIALS --project=$GCP_PROJECT_ID && \
+bq load --replace --source_format=PARQUET --project_id=$GCP_PROJECT_ID raw.crime_events gs://$GCS_BUCKET/raw/crime/*.parquet
+```
+
+### BigQuery SQL dialect (vs Postgres)
+| Postgres | BigQuery |
+|---|---|
+| `DISTINCT ON (col)` | `QUALIFY ROW_NUMBER() OVER (PARTITION BY col ORDER BY ...) = 1` |
+| `generate_series(start, end, interval)` | `GENERATE_DATE_ARRAY(start, end, INTERVAL 1 DAY)` + `UNNEST` |
+| `TO_CHAR(ts, 'YYYY')` | `FORMAT_TIMESTAMP('%Y', ts)` |
+| `EXTRACT(dow FROM date)` | `EXTRACT(DAYOFWEEK FROM date)` |
+| `::type` casts (e.g. `x::int`) | `SAFE_CAST(x AS INT64)` or `CAST(x AS INT64)` |
+| `double precision` | `FLOAT64` |
+| `varchar` / `text` | `STRING` |
+| `bigint` | `INT64` |
+| `DATE_TRUNC(date, MONTH)` | Same (arg order is the same in both) |
+
+### DBT `--exclude` and parsing
+`dbt build --exclude stg_station_status` prevents the model from being **built** (SQL sent to warehouse) but NOT from being **parsed** (Jja compiled, `source()`/`ref()` resolved). Excluded models still need their source definitions in `schema.yml` to compile. Keep the source entries — they're metadata, not runtime.
+
+### Bind mount permissions (WSL → container)
+A file `chmod 600` owned by host UID 1000 is unreadable by a container running as a different UID (Airflow uses 50000). For mounted secrets: `chmod 644` on the host (still gitignored, on user's machine) or match the container UID.
 
 ---

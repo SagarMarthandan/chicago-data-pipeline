@@ -1,6 +1,6 @@
 # Current State — Handoff Document
 
-> **Read this first in a new session.** This file is the handoff: current state, active decisions, and next steps. Last updated: 2026-07-20 (end of session — Phase 3 COMPLETE (3.1–3.4), Phase 4 Cloud NEXT).
+> **Read this first in a new session.** This file is the handoff: current state, active decisions, and next steps. Last updated: 2026-07-21 (Phase 4.3 COMPLETE — batch pipeline migrated to GCS/BigQuery).
 
 ---
 
@@ -10,7 +10,7 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 
 - **Repo:** `~/chicago-data-pipeline/` (WSL, Ubuntu on Windows 10)
 - **Git:** initialized on `main`, no commits yet (user commits manually)
-- **Phase:** 1 COMPLETE. Phase 2 COMPLETE (2.1–2.6). Phase 3 COMPLETE (3.1 Grafana ✅, 3.2 DBT tests ✅, 3.3 Airflow robustness ✅, 3.4 Verification ✅). Phase 4 NEXT (cloud). Phase 5 locked (plan written in chicago-pipeline-plan.md).
+- **Phase:** 1 COMPLETE. Phase 2 COMPLETE (2.1–2.6). Phase 3 COMPLETE (3.1–3.4). Phase 4 IN PROGRESS: 4.1 GCP setup ✅, 4.2 Terraform ✅, 4.3 Architecture change (Postgres→GCS/BigQuery) ✅. Phase 4.4 NEXT (Divvy trip history via Airbyte). Phase 5 locked.
 - **AI mode:** AI-writes-code (user said "you write it" — explicit mode switch from Socratic)
 
 ## Tech Stack
@@ -223,6 +223,31 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
 - Breaking the pipeline (stop producer) shows as Grafana alert within minutes ✅ (Scenario 1)
 - DBT tests catch a deliberately introduced data quality issue ✅ (Scenario 2)
 - Airflow retries a deliberately failing task and alerts on SLA miss ✅ (Scenario 3 — used execution_timeout + failed-tasks panel since Airflow 3.0 removed SLA)
+
+## Phase 4 — IN PROGRESS (4.1, 4.2, 4.3 COMPLETE; 4.4 NEXT)
+
+### Phase 4.1 — GCP Project Setup (COMPLETE)
+- Chose BigQuery over Snowflake/Redshift: free tier, serverless, DBT first-class.
+- Created GCP project `chicago-divvy-pipeline` (ID `480666653891`), linked billing, enabled APIs (BigQuery, Storage, Resource Manager).
+- Created service account `terraform-runner@chicago-divvy-pipeline.iam.gserviceaccount.com` with 4 scoped roles (bigquery.dataOwner, bigquery.jobUser, storage.admin, iam.serviceAccountTokenCreator — NOT owner).
+- Downloaded key to `~/chicago-divvy-pipeline-credentials.json` (chmod 600→644 for container access, gitignored).
+- See `docs/knowledge/gcp.md` for full reference.
+
+### Phase 4.2 — Terraform Provisioning (COMPLETE)
+- Created `terraform/` with `providers.tf` (Google provider v7.40.0), `variables.tf`, `main.tf` (3 resources: `google_bigquery_dataset.raw`, `google_bigquery_dataset.mart`, `google_storage_bucket.data_lake`).
+- `terraform init`/`plan`/`apply` successful. Verified: `bq ls` → raw+mart, `gsutil ls` → bucket.
+- See `docs/knowledge/terraform.md` for full reference.
+
+### Phase 4.3 — Architecture Change: Postgres → GCS/BigQuery (COMPLETE)
+- **Spark**: GCS connector JAR added. `crime_batch.py` now writes Parquet to `gs://chicago-divvy-pipeline-data-lake/raw/crime/` (was Postgres JDBC).
+- **Airflow**: gcloud SDK + bq CLI installed. New `bq_load_crime` task (GCS Parquet → BigQuery `raw.crime_events`). Removed `clear_dbt_schemas` + `wait_for_stream_data` sensor. `dbt_build` now `--exclude stg_station_status fact_station_reads` + passes GCP env vars.
+- **DBT**: Switched to `dbt-bigquery==1.12.0`. Both `profiles.yml` files rewritten for BigQuery. SQL dialect fixes: `DISTINCT ON`→`QUALIFY`, `generate_series`→`GENERATE_DATE_ARRAY`, `::type`→`SAFE_CAST`, `TO_CHAR`→`FORMAT_TIMESTAMP`. `dim_date` now crime-only (dropped station_status UNION). `try_cast` macro has BigQuery type mapping.
+- **Streaming stays on Postgres**: `stg_station_status` + `fact_station_reads` excluded from BigQuery DBT build via `--exclude`. Source kept in `schema.yml` for parsing.
+- **Verification**: All 4 tasks tested individually (download_crime failed on network timeout — pre-existing, not 4.3 related). spark_crime_batch: 263,402 rows→GCS. bq_load_crime: 263,403 rows→BigQuery. dbt_build: 38/38 tests pass. record_dbt_results: 32 results→Postgres. BigQuery marts verified: dim_date(365), fact_crime_events(263,403), dim_community_area(77), dim_crime_type(323).
+- **6 errors hit**: Docker credential helper, stale Airflow image, bq CLI auth, credentials file permissions, DBT `--exclude` parsing, Socrata timeout. See changelog for details.
+
+### Phase 4.4 — Divvy Trip History (NEXT, LOCKED until 4.3 verified)
+Use Airbyte to ingest Divvy trip history from S3 into BigQuery. Then update `dim_date` to span crime + Divvy trip dates, and build the final mart that answers the driving question. Also reference `bigquery-public-data.chicago_crime` (8M rows) for full crime history.
 
 ## Files Created (full repo structure)
 

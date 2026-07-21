@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 """
-Spark Batch Job — Crime Data ETL (Phase 1.3)
+Spark Batch Job — Crime Data ETL (Phase 4.3 — cloud migration)
 
 Reads Chicago crime data from Parquet, cleans it, and writes to
-Postgres raw.crime_events via JDBC.
+Google Cloud Storage (GCS) as Parquet. A separate `bq load` step
+(Airflow task) then loads GCS Parquet → BigQuery raw.crime_events.
 
-Pipeline: Read Parquet → Clean → Write to Postgres
+Pipeline: Read Parquet → Clean → Write to GCS (Parquet)
 
 Parquet path inside the Spark container:
     /opt/spark/data/raw/crime/crime_2023.parquet
 (host ./data is bind-mounted to /opt/spark/data in docker-compose.yml)
+
+GCS output:
+    gs://chicago-divvy-pipeline-data-lake/raw/crime/
+(GCS connector JAR baked into Spark image, auth via GOOGLE_APPLICATION_CREDENTIALS)
 
 Usage (inside spark-master container, local mode for testing):
     spark-submit --master local[*] /opt/spark/jobs/crime_batch.py
@@ -18,13 +23,8 @@ Usage (from host via docker exec):
     docker compose exec spark-master spark-submit \
         --master local[*] /opt/spark/jobs/crime_batch.py
 
-Usage (cluster mode — driver on master, executors on workers):
-    spark-submit --master spark://spark-master:7077 \
-        --deploy-mode client \
-        /opt/spark/jobs/crime_batch.py
-
-Postgres credentials come from environment variables (POSTGRES_USER,
-POSTGRES_PASSWORD) which are set in the Spark services in docker-compose.yml.
+GCP credentials come from GOOGLE_APPLICATION_CREDENTIALS env var
+(set in docker-compose.yml, pointing to the mounted service account key).
 """
 
 import os
@@ -40,21 +40,15 @@ from pyspark.sql import functions as F
 # Parquet input — inside the Spark container, ./data is mounted at /opt/spark/data
 PARQUET_PATH = "/opt/spark/data/raw/crime/crime_2023.parquet"
 
-# Postgres JDBC — uses Docker service name "postgres", not localhost
-POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "postgres")
-POSTGRES_PORT = os.environ.get("POSTGRES_PORT", "5432")
-POSTGRES_DB = os.environ.get("POSTGRES_DB", "chicago_analytics")
-POSTGRES_URL = f"jdbc:postgresql://{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
-POSTGRES_TABLE = "raw.crime_events"
+# GCS output — data lake bucket provisioned by Terraform (Phase 4.2)
+# Spark writes Parquet here; Airflow's bq_load_crime task loads it into BigQuery.
+GCS_BUCKET = os.environ.get("GCS_BUCKET", "chicago-divvy-pipeline-data-lake")
+GCS_OUTPUT_PATH = f"gs://{GCS_BUCKET}/raw/crime/"
 
-# Credentials from environment (never hardcoded — see docs/conventions/spark.md)
-POSTGRES_USER = os.environ.get("POSTGRES_USER", "chicago")
-POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "")
-
-# JDBC write tuning
-JDBC_BATCH_SIZE = 10_000   # rows per batch insert (default 1000 is slow)
-JDBC_NUM_PARTITIONS = 8    # parallel JDBC connections — must match repartition()
-
+# Number of partitions for the GCS write — controls Parquet file count.
+# Too few = large files (slow reads). Too many = small files (slow BigQuery load).
+# 8 is a good default for 263K rows (~33K rows/file).
+OUTPUT_PARTITIONS = 8
 
 # ============================================================
 # Cleaning
@@ -104,26 +98,22 @@ def clean(df):
 # Write
 # ============================================================
 
-def write_to_postgres(df, table):
+def write_to_gcs(df, path):
     """
-    Write DataFrame to Postgres via JDBC.
+    Write DataFrame to Google Cloud Storage as Parquet.
 
-    Uses overwrite mode for Phase 1 — idempotent (replaces the whole
-    table each run). Switch to upsert (MERGE INTO via temp table) in
-    Phase 2+ for incremental loads. See docs/conventions/spark.md.
+    Uses overwrite mode — idempotent (replaces all Parquet files in the
+    target directory each run). The GCS connector JAR (baked into the
+    Spark image) handles gs:// URIs. Auth via GOOGLE_APPLICATION_CREDENTIALS
+    env var (set in docker-compose.yml).
+
+    The `bq load` step (Airflow task) then loads this Parquet into BigQuery.
     """
     (
-        df.repartition(JDBC_NUM_PARTITIONS)
+        df.repartition(OUTPUT_PARTITIONS)
         .write
-        .format("jdbc")
-        .option("url", POSTGRES_URL)
-        .option("dbtable", table)
-        .option("user", POSTGRES_USER)
-        .option("password", POSTGRES_PASSWORD)
-        .option("batchsize", JDBC_BATCH_SIZE)
-        .option("numPartitions", JDBC_NUM_PARTITIONS)
         .mode("overwrite")
-        .save()
+        .parquet(path)
     )
 
 
@@ -162,31 +152,23 @@ def main():
     print(f"  Rows dropped (null id + duplicates): {dropped:,}")
     df_clean.printSchema()
 
-    # --- 3. Write ---
+    # --- 3. Write to GCS ---
     print(f"\n{'='*60}")
-    print(f"  Writing to Postgres: {POSTGRES_TABLE}")
-    print(f"  JDBC URL: {POSTGRES_URL}")
+    print(f"  Writing to GCS: {GCS_OUTPUT_PATH}")
+    print(f"  Partitions: {OUTPUT_PARTITIONS}")
     print(f"{'='*60}")
-    write_to_postgres(df_clean, POSTGRES_TABLE)
+    write_to_gcs(df_clean, GCS_OUTPUT_PATH)
     print("  Write complete.")
 
-    # --- 4. Verify ---
+    # --- 4. Verify (read back from GCS) ---
     print(f"\n{'='*60}")
-    print("  Verifying row count in Postgres...")
+    print("  Verifying row count in GCS...")
     print(f"{'='*60}")
-    df_verify = (
-        spark.read
-        .format("jdbc")
-        .option("url", POSTGRES_URL)
-        .option("dbtable", POSTGRES_TABLE)
-        .option("user", POSTGRES_USER)
-        .option("password", POSTGRES_PASSWORD)
-        .load()
-    )
-    pg_count = df_verify.count()
-    print(f"  Rows in Postgres {POSTGRES_TABLE}: {pg_count:,}")
-    if pg_count != clean_count:
-        print(f"  WARNING: mismatch! Spark={clean_count:,} vs Postgres={pg_count:,}")
+    df_verify = spark.read.parquet(GCS_OUTPUT_PATH)
+    gcs_count = df_verify.count()
+    print(f"  Rows in GCS {GCS_OUTPUT_PATH}: {gcs_count:,}")
+    if gcs_count != clean_count:
+        print(f"  WARNING: mismatch! Spark={clean_count:,} vs GCS={gcs_count:,}")
     else:
         print("  Row counts match.")
 

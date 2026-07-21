@@ -970,5 +970,66 @@ Write `terraform/main.tf` + `providers.tf` + `variables.tf` + `terraform.tfvars`
 2. **`~` not expanded by gcloud (again)** — `gcloud auth activate-service-account --key-file=~/...` failed with `No such file or directory: '~/...'`. Fix: use `/home/sagar/...` explicit path.
 3. **`gcloud services list` failed with AUTH_PERMISSION_DENIED** — expected, not a bug. The SA's scoped roles don't include `serviceusage.services.list` (admin role). Least privilege working as designed. Verified APIs from personal Gmail in PowerShell instead; used `bq ls` + `gsutil ls` (permissions ARE in SA roles) for resource verification.
 
-### Next — Phase 4.3: Architecture change
-Make the pipeline use the cloud containers: Spark → GCS (Parquet) instead of Postgres; Airbyte replaces `download_crime.py`; DBT `profiles.yml` switches Postgres → BigQuery adapter. Streaming path decision: keep on Postgres (small data) or move to BigQuery.
+### Next — Phase 4.3: Architecture change (DONE)
+Rewired the batch pipeline from local Postgres to GCS/BigQuery. See Phase 4.3 section below.
+
+## 2026-07-21 — Phase 4.3: Architecture Change (Postgres → GCS/BigQuery)
+
+### What was built
+Migrated the batch analytics path from local Postgres to GCP (GCS + BigQuery). The streaming path (Divvy GBFS) stays on local Postgres — only the crime batch path moved to cloud. The pipeline is now: `download_crime.py` → Spark (Parquet → GCS) → `bq load` (GCS → BigQuery) → DBT (BigQuery marts) → record_dbt_results (Postgres observability).
+
+### Files created
+- `airflow/scripts/bq_load_crime.py` — NOT created (used `bq` CLI in BashOperator instead, consistent with existing patterns).
+
+### Files modified
+- `spark/Dockerfile` — added `gcs-connector-hadoop3-latest.jar` to `/opt/spark/jars/` (GCS connector for Spark).
+- `spark/jobs/crime_batch.py` — rewrote sink: `write_to_postgres()` → `write_to_gcs()` (Parquet to `gs://chicago-divvy-pipeline-data-lake/raw/crime/`). Updated verification to read back from GCS.
+- `docker-compose.yml` — added GCP env vars (`GOOGLE_APPLICATION_CREDENTIALS`, `GCP_PROJECT_ID`, `GCS_BUCKET`, `BIGQUERY_LOCATION`) + credentials volume mount to spark-master, spark-worker, and `x-airflow-common` anchor (Airflow services).
+- `airflow/Dockerfile` — added Google Cloud SDK installation block (apt repo + `google-cloud-cli` package) for `bq` CLI.
+- `airflow/requirements.txt` — added `google-cloud-bigquery` (Python fallback for bq CLI).
+- `airflow/dags/crime_batch_dag.py` — rewrote tasks: new `bq_load_crime` (GCS Parquet → BigQuery via `bq load`), removed `clear_dbt_schemas` + `wait_for_stream_data` sensor, updated `dbt_build` with `--exclude stg_station_status fact_station_reads` + GCP env passthrough, updated docstring.
+- `dbt/Dockerfile` — switched from `dbt-postgres==1.10.2` to `dbt-bigquery==1.12.0`.
+- `dbt/profiles.yml` — rewrote for BigQuery adapter (service-account key auth, host keyfile path).
+- `airflow/dbt_profiles/profiles.yml` — rewrote for BigQuery adapter (container keyfile path).
+- `dbt/macros/try_cast.sql` — added BigQuery branch with Postgres→BigQuery type mapping (`int`→`INT64`, `timestamp`→`TIMESTAMP`, etc.) + `SAFE_CAST`.
+- `dbt/models/staging/stg_crime_events.sql` — `DISTINCT ON` → `QUALIFY ROW_NUMBER()`, `::type` → `SAFE_CAST`/`CAST`.
+- `dbt/models/marts/dim_date.sql` — dropped station_status UNION (crime dates only), `generate_series` → `GENERATE_DATE_ARRAY + UNNEST`, `TO_CHAR` → `FORMAT_TIMESTAMP`, `EXTRACT(dow FROM)` → `EXTRACT(DAYOFWEEK FROM)`.
+- `dbt/models/marts/dim_community_area.sql` — `::int`/`::text` → `CAST(... AS INT64/STRING)`.
+- `dbt/models/marts/fact_crime_events.sql` — `::date` → `DATE()` (idiomatic BigQuery).
+- `dbt/models/staging/schema.yml` — updated source comments for BigQuery, added `station_status` source back (for parsing only — excluded from build).
+- `dbt/models/marts/schema.yml` — updated `dim_date` description + year test bounds (2023 only).
+- `.env` + `.env.example` — added GCP section (`GCP_CREDENTIALS_PATH`, `GCP_PROJECT_ID`, `GCS_BUCKET`, `BIGQUERY_LOCATION`).
+
+### Data flow (Phase 4.3)
+```mermaid
+graph LR
+    A[Socrata API] -->|download_crime.py| B[Parquet /data/raw/crime/]
+    B -->|Spark crime_batch.py| C[GCS gs://...data-lake/raw/crime/]
+    C -->|bq load --replace| D[BigQuery raw.crime_events]
+    D -->|DBT build| E[BigQuery mart.* tables]
+    E -->|record_dbt_results.py| F[Postgres observability.dbt_test_results]
+    F -->|Grafana query| G[DBT tests panel]
+```
+
+### Verification (full DAG run — all 5 tasks succeeded)
+The DAG was triggered and all 5 tasks succeeded end-to-end:
+
+| Task | Result | Duration |
+|---|---|---|
+| `download_crime` | ✅ Socrata API → Parquet (passed on retry after transient timeout) | ~2min |
+| `spark_crime_batch` | ✅ 263,402 rows written to GCS Parquet | ~1.5min |
+| `bq_load_crime` | ✅ 263,403 rows loaded into BigQuery `raw.crime_events` | ~11s |
+| `dbt_build` | ✅ 38/38 tests pass. Marts: dim_date (365), fact_crime_events (263,403), dim_community_area (77), dim_crime_type (323) | ~30s |
+| `record_dbt_results` | ✅ 32 test results recorded into Postgres `observability.dbt_test_results` | <1s |
+
+Also tested each task individually via `airflow tasks test` during debugging (before the full DAG run succeeded).
+
+### Errors hit
+1. **Docker credential helper error** (`docker-credential-desktop.exe: exec format error`) — WSL2 Docker config pointed to Windows exe. Fix: `"credsStore": ""` in `~/.docker/config.json`.
+2. **`bq` CLI not found in Airflow container** — stale image. Compose generated separate image names per service. Fix: `docker compose build --no-cache airflow-scheduler` + `--force-recreate`.
+3. **`bq load` auth failure** ("no active account selected") — `bq` CLI doesn't read `GOOGLE_APPLICATION_CREDENTIALS` like the Python client. Fix: `gcloud auth activate-service-account --key-file=...` before `bq load` in the DAG task.
+4. **Credentials file permission denied** — `chmod 600` owned by host UID 1000, Airflow runs as UID 50000. Fix: `chmod 644` on host (still gitignored).
+5. **DBT compilation error** ("source raw.station_status not found") — `--exclude` prevents building but not parsing. Fix: added `station_status` source back to `schema.yml` for parsing.
+
+### Next — Phase 4.4: Divvy trip history (Airbyte S3 → BigQuery)
+Use Airbyte to ingest Divvy trip history from S3 into BigQuery. Then update `dim_date` to span crime + Divvy trip dates, and build the final mart that answers the driving question.

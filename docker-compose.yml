@@ -94,6 +94,19 @@ x-airflow-common: &airflow-common
     # Webserver secret key — shared for session signing.
     AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
 
+    # ============ GCP credentials (Phase 4.3) ============
+    # Airflow needs GCP auth for:
+    #   1. `bq load` task (BashOperator runs `bq` CLI inside Airflow container)
+    #   2. DBT BigQuery adapter (dbt container uses --volumes-from airflow,
+    #      inherits these env vars + the mounted key)
+    # The bq CLI + google-cloud-bigquery pick up GOOGLE_APPLICATION_CREDENTIALS
+    # automatically. DBT's BigQuery adapter reads the path from profiles.yml
+    # (which points to the same mounted file).
+    GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/gcp-credentials.json
+    GCP_PROJECT_ID: ${GCP_PROJECT_ID:-chicago-divvy-pipeline}
+    GCS_BUCKET: ${GCS_BUCKET:-chicago-divvy-pipeline-data-lake}
+    BIGQUERY_LOCATION: ${BIGQUERY_LOCATION:-US}
+
   volumes:
     # DAG files — bind mount so edits on host appear immediately in container
     - ./airflow/dags:/opt/airflow/dags
@@ -134,6 +147,10 @@ x-airflow-common: &airflow-common
     # as a namespace package, hiding the installed kafka module.
     - ./kafka:/opt/airflow/kafka_scripts
 
+    # GCP service account key (Phase 4.3) — read-only mount for bq CLI + DBT.
+    # Same key file as Spark (~/chicago-divvy-pipeline-credentials.json).
+    # DBT container inherits this via --volumes-from the Airflow container.
+    - ${GCP_CREDENTIALS_PATH:-~/chicago-divvy-pipeline-credentials.json}:/opt/airflow/gcp-credentials.json:ro
 
 services:
 
@@ -187,8 +204,8 @@ services:
       # workers can't resolve. Setting it to the Docker service name ensures
       # workers can connect back via spark://spark-master:7077.
       SPARK_MASTER_HOST: spark-master
-      # Postgres credentials — needed by spark-submit jobs that write via JDBC.
-      # Passed through from .env so they're never hardcoded in the job script.
+      # Postgres credentials — still needed for Spark Structured Streaming
+      # (divvy_stream.py writes to Postgres — stream stays local in Phase 4).
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
@@ -197,6 +214,10 @@ services:
       # Kafka bootstrap server — used by Spark Structured Streaming (Phase 2.4)
       # to read from the divvy_station_status topic.
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      # GCP credentials (Phase 4.3) — Spark writes crime data to GCS.
+      # The GCS connector JAR reads this env var for service account auth.
+      GOOGLE_APPLICATION_CREDENTIALS: /opt/spark/gcp-credentials.json
+      GCS_BUCKET: ${GCS_BUCKET:-chicago-divvy-pipeline-data-lake}
     # Official apache/spark uses spark-class to start master/worker directly.
     # Bitnami's SPARK_MODE=master env var doesn't exist in the official image.
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
@@ -214,6 +235,11 @@ services:
       # fault recovery (Phase 2.4). Named volume so checkpoints survive
       # container restarts — without it, a restart re-reads all Kafka messages.
       - spark_checkpoints:/opt/spark/checkpoints
+      # GCP service account key (Phase 4.3) — read-only mount for GCS auth.
+      # The key file lives outside the repo (~/chicago-divvy-pipeline-credentials.json)
+      # to avoid accidental commits. GOOGLE_APPLICATION_CREDENTIALS env var
+      # points here.
+      - ${GCP_CREDENTIALS_PATH:-~/chicago-divvy-pipeline-credentials.json}:/opt/spark/gcp-credentials.json:ro
     healthcheck:
       # Check if Spark master Web UI is responding on port 8080.
       # We check the Web UI (not the RPC port 7077) because Spark master
@@ -243,6 +269,9 @@ services:
       POSTGRES_PORT: "5432"
       # Kafka bootstrap server — used by Spark Structured Streaming executors
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      # GCP credentials (Phase 4.3) — executors need GCS auth in cluster mode.
+      GOOGLE_APPLICATION_CREDENTIALS: /opt/spark/gcp-credentials.json
+      GCS_BUCKET: ${GCS_BUCKET:-chicago-divvy-pipeline-data-lake}
     # Worker connects to master via spark://spark-master:7077
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     depends_on:
@@ -255,6 +284,8 @@ services:
       - ./spark/jobs:/opt/spark/jobs
       # Data directory — Parquet files from ingestion are read by Spark
       - ./data:/opt/spark/data
+      # GCP service account key (Phase 4.3) — same read-only mount as spark-master.
+      - ${GCP_CREDENTIALS_PATH:-~/chicago-divvy-pipeline-credentials.json}:/opt/spark/gcp-credentials.json:ro
 
   # ============ Airflow 3.0 ============
   # Three services from one image (airflow/Dockerfile):

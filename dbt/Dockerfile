@@ -12,10 +12,16 @@
 
 FROM python:3.11-slim
 
-# Install dbt-postgres — pinned to match host (pyproject.toml)
-# dbt_packages/ in ./dbt was installed with these versions.
+# Install dbt-bigquery (Phase 4.3 — switched from dbt-postgres).
+# dbt-bigquery 1.12.0 pulls dbt-core 1.12.0 as a dependency.
+# The BigQuery adapter uses the google-cloud-bigquery Python client,
+# which auths via GOOGLE_APPLICATION_CREDENTIALS env var (mounted key file).
+#
+# Note: dbt-postgres is no longer installed. The analytics warehouse is
+# BigQuery now. Local Postgres is only used for the streaming path
+# (divvy_stream) and the observability schema (dbt_test_results) — neither
+# is managed by DBT.
 RUN pip install --no-cache-dir \
-    dbt-core==1.11.12 \
-    dbt-postgres==1.10.2
+    dbt-bigquery==1.12.0
 
 WORKDIR /opt/airflow/dbt

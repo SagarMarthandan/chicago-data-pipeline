@@ -22,3 +22,14 @@ pyarrow
 requests>=2.34.2
 python-dotenv>=1.2.2
 kafka-python
+
+# ============================================================
+# GCP (Phase 4.3 — BigQuery integration)
+# ============================================================
+# google-cloud-bigquery — Python BigQuery client. Used as a fallback
+# for the bq CLI in case we need programmatic access (e.g., checking
+# table existence before bq load). The bq CLI (installed via gcloud SDK
+# in the Dockerfile) is the primary tool for `bq load` tasks.
+# Auth via GOOGLE_APPLICATION_CREDENTIALS env var (mounted key file).
+# ============================================================
+google-cloud-bigquery

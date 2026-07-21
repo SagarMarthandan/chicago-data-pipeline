@@ -34,6 +34,9 @@ A running log of changes, errors, and fixes throughout the project. Use this to 
 - [2026-07-20 — Phase 3.2: DBT Tests](#2026-07-20--phase-32-dbt-tests)
 - [2026-07-20 — Phase 3.3: Airflow Robustness](#2026-07-20--phase-33-airflow-robustness)
 - [2026-07-20 — Phase 3.4: Verification](#2026-07-20--phase-34-verification)
+- [2026-07-21 — Phase 4.1: Warehouse Choice + GCP Project Setup](#2026-07-21--phase-41-warehouse-choice--gcp-project-setup)
+- [2026-07-21 — Phase 4.2: Terraform (BigQuery + GCS provisioning)](#2026-07-21--phase-42-terraform-bigquery--gcs-provisioning)
+- [2026-07-21 — Phase 4.3: Architecture Change (Postgres → GCS/BigQuery)](#2026-07-21--phase-43-architecture-change-postgres--gcsbigquery)
 
 ---
 
@@ -849,3 +852,30 @@ No errors encountered. All 59 DBT tests passed on first run.
 - **Terraform `delete_contents_on_destroy = true` is a learning-project tradeoff** — lets `terraform destroy` wipe data so you can re-run from scratch. NEVER set this in production — it would delete your warehouse on a typo. Same for `force_destroy = true` on buckets.
 - **Pin Terraform provider versions with `~>`** — `~> 7.40` allows patch updates (7.40.1, 7.40.2) but blocks minor versions (7.41) that could change behavior. Stable, non-experimental versions per user preference.
 - **`terraform.tfstate` is the source of truth for what Terraform manages** — gitignored (contains resource IDs + some metadata). Lose it and Terraform can't destroy cleanly. Local state is fine for one operator; migrate to GCS backend for team use (plan says later).
+
+## 2026-07-21 — Phase 4.3: Architecture Change (Postgres → GCS/BigQuery)
+
+### Changes
+- **Spark**: Added GCS connector JAR to `spark/Dockerfile`. Rewrote `crime_batch.py` sink from Postgres JDBC to GCS Parquet (`gs://chicago-divvy-pipeline-data-lake/raw/crime/`). Added `GOOGLE_APPLICATION_CREDENTIALS` + `GCS_BUCKET` env vars + credentials volume mount to spark-master + spark-worker in `docker-compose.yml`.
+- **Airflow**: Added Google Cloud SDK (gcloud + bq CLI) to `airflow/Dockerfile`. Added GCP env vars + credentials mount to `x-airflow-common` anchor. Added `google-cloud-bigquery` to `airflow/requirements.txt`. Rewrote `crime_batch_dag.py`: new `bq_load_crime` task (GCS Parquet → BigQuery `raw.crime_events`), removed `clear_dbt_schemas` + `wait_for_stream_data` sensor, updated `dbt_build` with `--exclude stg_station_status fact_station_reads` + GCP env passthrough.
+- **DBT**: Switched `dbt/Dockerfile` from `dbt-postgres==1.10.2` to `dbt-bigquery==1.12.0`. Rewrote both `profiles.yml` files for BigQuery (service-account key auth). Fixed SQL for BigQuery dialect: `DISTINCT ON` → `QUALIFY ROW_NUMBER()`, `::type` → `SAFE_CAST`/`CAST`, `generate_series` → `GENERATE_DATE_ARRAY`, `TO_CHAR` → `FORMAT_TIMESTAMP`, `EXTRACT(dow FROM)` → `EXTRACT(DAYOFWEEK FROM)`. Dropped station_status UNION from `dim_date.sql`. Updated `try_cast` macro with BigQuery type mapping. Added `station_status` source back to `schema.yml` (for parsing only — excluded from build).
+- **Env**: Added GCP section to `.env` + `.env.example` (`GCP_CREDENTIALS_PATH`, `GCP_PROJECT_ID`, `GCS_BUCKET`, `BIGQUERY_LOCATION`).
+- **Verification**: Rebuilt all Docker images. Tested each task individually via `airflow tasks test`: spark_crime_batch (263,402 rows → GCS), bq_load_crime (263,403 rows → BigQuery), dbt_build (38/38 tests pass, 4 marts created), record_dbt_results (32 test results → Postgres observability). Verified BigQuery marts: dim_date (365), fact_crime_events (263,403), dim_community_area (77), dim_crime_type (323).
+
+### Errors & Fixes
+
+| # | Error | Root Cause | Fix |
+|---|---|---|---|
+| 1 | `docker compose build` → `error getting credentials - fork/exec docker-credential-desktop.exe: exec format error` | WSL2 Docker config (`~/.docker/config.json`) had `"credsStore": "desktop.exe"` — points to Windows exe that can't run in WSL. | Set `"credsStore": ""` + `"auths": {}` in `~/.docker/config.json`. |
+| 2 | `bq load` → exit code 127 (command not found) | Airflow services were running stale images — `--force-recreate` didn't pick up the new build. Compose generated separate image names per service. | `docker compose build --no-cache airflow-scheduler` then `docker compose up -d --force-recreate airflow-scheduler`. |
+| 3 | `bq load` → "You do not currently have an active account selected" | The `bq` CLI (gcloud SDK) does NOT read `GOOGLE_APPLICATION_CREDENTIALS` env var like the Python client does. It uses gcloud's own credential store. | Added `gcloud auth activate-service-account --key-file=$GOOGLE_APPLICATION_CREDENTIALS` before `bq load` in the DAG task. |
+| 4 | `gcloud auth activate-service-account` → "Permission denied: /opt/airflow/gcp-credentials.json" | Credentials file was `chmod 600` owned by host UID 1000, but Airflow container runs as UID 50000. | `chmod 644 ~/chicago-divvy-pipeline-credentials.json` on host (still gitignored, on user's own machine). |
+| 5 | `dbt build` → "Model stg_station_status depends on source raw.station_status which was not found" | `--exclude` prevents models from being BUILT but not from being PARSED. DBT still resolves `source()` refs during compilation. I had removed the source from `schema.yml`. | Added `station_status` source back to `schema.yml` (for parsing only). The `--exclude` flag still prevents it from being built against BigQuery. |
+| 6 | `download_crime` task → `ReadTimeout: data.cityofchicago.org` | Socrata API network timeout (transient, pre-existing — not Phase 4.3 related). Data already existed from a prior run. | Not a Phase 4.3 bug. Tested remaining 4 tasks individually via `airflow tasks test`. |
+
+### Lessons Summary
+- **`bq` CLI ≠ Python client for auth** — The `google-cloud-bigquery` Python library reads `GOOGLE_APPLICATION_CREDENTIALS` automatically. The `bq` CLI (part of gcloud SDK) does NOT — it uses gcloud's credential store and needs `gcloud auth activate-service-account --key-file=...` first. This is a common gotcha when mixing CLI + library auth.
+- **`--exclude` prevents building, not parsing** — DBT's `--exclude` flag skips model execution but NOT compilation. Excluded models still need their `source()` and `ref()` calls to resolve. Keep source definitions in `schema.yml` even for models that won't build — they're metadata, not runtime.
+- **Docker Compose image naming** — without an explicit `image:` tag in a service, Compose generates a name per-service. `docker compose build airflow-init` builds a different image than `docker compose build airflow-scheduler`. Always build the specific service you're recreating, or add explicit `image:` tags.
+- **Bind mount permissions across UIDs** — a file `chmod 600` owned by host UID 1000 is unreadable by a container running as UID 50000 (Airflow's default). For mounted secrets, use `chmod 644` or match the container UID. The file is still gitignored + on the user's machine.
+- **BigQuery SQL dialect differences** — Postgres `DISTINCT ON` → BigQuery `QUALIFY ROW_NUMBER() OVER(...) = 1`. `generate_series` → `GENERATE_DATE_ARRAY + UNNEST`. `TO_CHAR` → `FORMAT_TIMESTAMP`. `::type` casts work in BigQuery but `SAFE_CAST`/`CAST` is more idiomatic. `DATE_TRUNC(date, MONTH)` arg order is the same in both.

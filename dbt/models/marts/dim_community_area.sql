@@ -10,6 +10,6 @@
 -- ============================================================
 
 SELECT
-    community_area_id::int   AS community_area_id,
-    community_area_name::varchar AS community_area_name
+    CAST(community_area_id AS INT64)   AS community_area_id,
+    CAST(community_area_name AS STRING) AS community_area_name
 FROM {{ ref('community_areas') }}

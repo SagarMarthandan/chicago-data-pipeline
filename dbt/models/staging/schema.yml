@@ -3,25 +3,25 @@ version: 2
 sources:
   - name: raw
     schema: raw
+    # Phase 4.3 — source is now BigQuery dataset `raw` (was Postgres schema).
+    # The crime_events table is loaded by `bq load` from GCS Parquet.
+    # station_status stays on local Postgres (streaming path). The source
+    # definition is kept so stg_station_status + fact_station_reads can
+    # compile, but they're excluded from dbt build via --exclude in the DAG
+    # (the table doesn't exist in BigQuery). They'll be revisited in Phase 4.6.
     tables:
       - name: crime_events
-        # Spark writes to raw.crime_events (Phase 1.3)
-        # Columns: id (bigint), case_number, date (timestamp), block, iucr,
+        # Loaded by bq_load_crime Airflow task: GCS Parquet → BigQuery.
+        # Columns match the Parquet schema from Spark (crime_batch.py):
+        # id (long), case_number, date (timestamp), block, iucr,
         # primary_type, description, location_description, arrest (bool),
-        # domestic (bool), beat, district (bigint), ward (double),
+        # domestic (bool), beat, district (int), ward (int),
         # community_area (int), fbi_code, x_coordinate, y_coordinate,
-        # year (bigint), updated_on (timestamp), latitude (double),
+        # year (int), updated_on (timestamp), latitude (double),
         # longitude (double)
       - name: station_status
-        # Spark Structured Streaming writes to raw.station_status (Phase 2.4)
-        # Columns: station_id (text), num_bikes_available (int),
-        # num_bikes_disabled (int), num_docks_available (int),
-        # num_docks_disabled (int), is_installed (bool), is_renting (bool),
-        # is_returning (bool), last_reported (timestamp), legacy_id (text),
-        # num_ebikes_available (int), eightd_has_available_keys (bool),
-        # num_scooters_available (int), num_scooters_unavailable (int),
-        # kafka_partition (int), kafka_offset (bigint),
-        # kafka_timestamp (timestamp), ingest_timestamp (timestamp)
+        # Stays on local Postgres (streaming path). Not in BigQuery.
+        # Source definition exists only so stg_station_status compiles.
 
 models:
   - name: stg_crime_events

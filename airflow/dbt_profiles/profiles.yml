@@ -1,12 +1,11 @@
-# DBT Profiles for Airflow container
+# DBT Profiles for Airflow container (Phase 4.3 — BigQuery)
 #
-# This is a SEPARATE profiles.yml from dbt/profiles.yml (which uses
-# host: localhost for host-side dbt commands). Inside the Airflow
-# container, Postgres is reached via the Docker service name "postgres",
-# not localhost.
+# This is a SEPARATE profiles.yml from dbt/profiles.yml (which uses the
+# host's key file path). Inside the Airflow container, the key file is
+# mounted at /opt/airflow/gcp-credentials.json (from docker-compose.yml).
 #
-# Credentials come from environment variables (POSTGRES_USER, etc.)
-# passed to the Airflow container in docker-compose.yml.
+# The DBT container (launched via `docker run --volumes-from <airflow>`)
+# inherits this mount + the GOOGLE_APPLICATION_CREDENTIALS env var.
 #
 # Usage in DAG: dbt build --profiles-dir /opt/airflow/dbt_profiles
 
@@ -14,11 +13,10 @@ chicago_crime:
   target: dev
   outputs:
     dev:
-      type: postgres
-      host: postgres
-      user: "{{ env_var('POSTGRES_USER') }}"
-      password: "{{ env_var('POSTGRES_PASSWORD') }}"
-      port: 5432
-      dbname: "{{ env_var('POSTGRES_DB') }}"
-      schema: staging
+      type: bigquery
+      method: service-account
+      project: chicago-divvy-pipeline
+      dataset: staging  # default dataset — overridden per-model by dbt_project.yml
       threads: 4
+      keyfile: /opt/airflow/gcp-credentials.json
+      location: US

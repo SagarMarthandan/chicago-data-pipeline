@@ -6,14 +6,14 @@ A data engineering learning project that answers: **Does crime near a Divvy bike
 
 | Layer | Tool | Phase |
 |---|---|---|
-| Warehouse | Postgres (local) → BigQuery (cloud) | 1 → 4 |
+| Warehouse | Postgres (local, streaming + observability) + BigQuery (cloud, analytics) | 1 → 4 ✅ |
 | Batch processing | Spark DataFrames | 1 ✅ |
 | Streaming | Kafka + Spark Structured Streaming | 2 ✅ |
-| Transformation | DBT | 1+ ✅ |
+| Transformation | DBT (dbt-bigquery for analytics, dbt-postgres for stream) | 1+ ✅ |
 | Orchestration | Airflow | 1+ ✅ |
 | Observability | Grafana | 3 ✅ |
-| Ingestion (cloud) | Airbyte | 4 |
-| Infra (cloud) | Terraform | 4 |
+| Ingestion (cloud) | Airbyte | 4 (4.4 next) |
+| Infra (cloud) | Terraform | 4 ✅ (4.2) |
 | Containerization | Docker + Docker Compose | 1+ |
 | CI/CD | GitHub Actions + GHCR | 5 |
 
@@ -31,51 +31,85 @@ graph LR
         DV["Divvy GBFS API<br/>~60s refresh"]
     end
 
-    CC -->|"batch CSV/parquet"| SP[Spark Batch]
-    DV -->|live stream| KP[Kafka Producer]
-    KP --> KT[(Kafka Topic)]
-    KT --> SS[Spark Structured Streaming]
+    subgraph "Batch Path (Cloud — Phase 4.3)"
+        SP[Spark Batch]
+        GCS[("GCS Bucket<br/>data-lake/raw/crime/")]
+        BQL["bq load"]
+        BQ[("BigQuery<br/>raw + mart datasets")]
+    end
 
-    SP --> PG[("Postgres<br/>raw schema")]
+    subgraph "Streaming Path (Local Postgres)"
+        KP[Kafka Producer]
+        KT[(Kafka Topic)]
+        SS[Spark Structured Streaming]
+        PG[("Postgres<br/>raw.station_status")]
+    end
+
+    subgraph "Transformation + Observability"
+        DBT["DBT<br/>(dbt-bigquery)"]
+        BQM[("BigQuery<br/>mart.* tables")]
+        OBS["Postgres<br/>observability"]
+        GR["Grafana<br/>dashboards"]
+    end
+
+    CC -->|"batch Parquet"| SP
+    SP -->|Parquet| GCS
+    GCS --> BQL
+    BQL --> BQ
+    BQ --> DBT
+    DBT --> BQM
+    DBT -->|test results| OBS
+    BQM --> GR
+    OBS --> GR
+
+    DV -->|live stream| KP
+    KP --> KT
+    KT --> SS
     SS --> PG
 
-    PG --> DBT["DBT<br/>staging to marts"]
-    DBT --> PG2[("Postgres<br/>mart schema")]
-
-    PG2 --> GR["Grafana<br/>dashboards"]
-    PG2 --> BI["BI / Analytics"]
-
     AF["Airflow<br/>orchestration"] -.-> SP
+    AF -.-> BQL
     AF -.-> DBT
     AF -.-> KP
 
     style CC fill:#f9d0c4,stroke:#e8744c
     style DV fill:#c4e8f9,stroke:#4c9ee8
-    style PG fill:#d4f4dd,stroke:#4ca85a
-    style PG2 fill:#d4f4dd,stroke:#4ca85a
+    style GCS fill:#c4e8f9,stroke:#4c9ee8
+    style BQ fill:#d4f4dd,stroke:#4ca85a
+    style BQM fill:#d4f4dd,stroke:#4ca85a
+    style PG fill:#fff3cd,stroke:#e8c84c
     style AF fill:#fff3cd,stroke:#e8c84c
 ```
-
-## Pipeline Flow
-
 ```mermaid
 flowchart TD
-    A["Download Crime Data<br/>Socrata API"] --> B["Spark Batch Job<br/>clean + transform"]
-    B --> C["Postgres raw.crime_events"]
-    C --> D["DBT Staging<br/>stg_crime_events"]
-    D --> E["DBT Marts<br/>fact_crime_events"]
-    E --> F["DBT Tests<br/>quality checks"]
-    F --> G["Grafana / Analytics"]
+    subgraph "Batch Path (Cloud — BigQuery)"
+        A["Download Crime Data<br/>Socrata API"] --> B["Spark Batch Job<br/>clean + transform"]
+        B --> GCS["GCS Parquet<br/>gs://...data-lake/raw/crime/"]
+        GCS --> BQ["bq load<br/>→ BigQuery raw.crime_events"]
+        BQ --> D["DBT Staging<br/>stg_crime_events"]
+        D --> E["DBT Marts<br/>fact_crime_events, dim_date, etc."]
+        E --> F["DBT Tests<br/>38 quality checks"]
+        F --> G["Grafana / Analytics"]
+    end
 
-    H["Divvy GBFS API"] --> I[Kafka Producer]
-    I --> J[(Kafka Topic)]
-    J --> K[Spark Streaming]
-    K --> L["Postgres raw.station_status"]
-    L --> M["DBT Staging + Marts"]
-    M --> G
+    subgraph "Streaming Path (Local — Postgres)"
+        H["Divvy GBFS API"] --> I[Kafka Producer]
+        I --> J[(Kafka Topic)]
+        J --> K[Spark Streaming]
+        K --> L["Postgres raw.station_status"]
+        L --> M["DBT Staging + Marts<br/>(excluded from BigQuery build)"]
+        M --> G
+    end
+
+    subgraph "Observability (Local — Postgres)"
+        F -->|test results| OBS["record_dbt_results.py<br/>→ observability.dbt_test_results"]
+        OBS --> G
+    end
 
     style A fill:#f9d0c4
     style H fill:#c4e8f9
+    style GCS fill:#c4e8f9
+    style BQ fill:#d4f4dd
     style G fill:#d4f4dd
 ```
 
@@ -92,12 +126,12 @@ graph LR
     P1 -->|"✅ DONE: docker compose up<br/>DAG runs, marts queryable"| P2
     P2 -->|"✅ DONE: live Divvy data<br/>in Postgres via Kafka"| P3
     P3 -->|"✅ DONE: Grafana + DBT tests<br/>+ Airflow robustness verified"| P4
-    P4 -->|"done when: Terraform + BigQuery<br>+ Airbyte operational"| P5
+    P4 -->|"4.1-4.3 DONE: GCP + Terraform +<br/>batch pipeline on BigQuery<br/>4.4 NEXT: Airbyte"| P5
 
     style P1 fill:#d4f4dd,stroke:#4ca85a
     style P2 fill:#d4f4dd,stroke:#4ca85a
     style P3 fill:#d4f4dd,stroke:#4ca85a
-    style P4 fill:#f0f0f0,stroke:#999
+    style P4 fill:#fff3cd,stroke:#e8c84c
     style P5 fill:#f0f0f0,stroke:#999
 ```
 
@@ -142,12 +176,22 @@ See `docs/phases/` for phase-completion documents with architecture diagrams, er
 
 **Phase 3: DONE.** Grafana dashboards + DBT tests + Airflow robustness all verified. Phase 3 gate met (break pipeline → observability catches it). Verified 2026-07-20.
 
+### Phase 4 — Cloud Migration
+
+| Sub-Phase | Status | What was built |
+|---|---|---|
+| **4.1 GCP Project Setup** | **Complete** | Chose BigQuery (free tier, serverless, DBT first-class). Created GCP project `chicago-divvy-pipeline` (ID `480666653891`), linked billing, enabled APIs (BigQuery, Storage, Resource Manager). Created service account `terraform-runner` with 4 scoped roles (NOT owner). Downloaded key to `~/chicago-divvy-pipeline-credentials.json` (gitignored, chmod 644). 3 errors: gcloud doesn't expand `~`, PowerShell line continuation differs, beta components not installed. |
+| **4.2 Terraform** | **Complete** | `terraform/` with providers.tf (Google provider v7.40.0), variables.tf, main.tf (3 resources: `google_bigquery_dataset.raw`, `google_bigquery_dataset.mart`, `google_storage_bucket.data_lake`). `terraform init`/`plan`/`apply` successful. Verified: `bq ls` → raw+mart, `gsutil ls` → bucket. 3 errors: WSL gcloud separate auth state, `~` not expanded (again), least-privilege SA can't list APIs (expected). |
+| **4.3 Architecture Change** | **Complete** | Rewired batch pipeline from Postgres to GCS/BigQuery. Spark writes Parquet to GCS (was Postgres JDBC). New `bq_load_crime` Airflow task (GCS → BigQuery via `bq load`). DBT switched to `dbt-bigquery==1.12.0` with SQL dialect fixes (`DISTINCT ON`→`QUALIFY`, `generate_series`→`GENERATE_DATE_ARRAY`, `::type`→`SAFE_CAST`). `dim_date` now crime-only (dropped station_status UNION). Streaming stays on Postgres (`--exclude stg_station_status fact_station_reads`). Full DAG run: all 5 tasks succeed, 263,403 rows in BigQuery, 38/38 DBT tests pass. 6 errors: Docker credential helper, stale Airflow image, bq CLI auth, credentials file permissions, DBT `--exclude` parsing, Socrata timeout. |
+
+**Phase 4: 4.1-4.3 DONE.** Batch pipeline runs on GCP (Spark → GCS → BigQuery → DBT). Streaming stays on local Postgres. Next: Phase 4.4 (Airbyte for Divvy trip history). Verified 2026-07-21.
+
 ## Phased Build
 
-1. **Batch foundation** — Postgres + Spark batch + DBT marts + Airflow DAG
-2. **Live stream** — Divvy GBFS → Kafka → Spark Structured Streaming → Postgres
-3. **Observability** — Grafana dashboards, DBT tests, Airflow SLAs
-4. **Cloud migration** — Terraform → BigQuery + GCS, Airbyte ingestion
+1. **Batch foundation** — Postgres + Spark batch + DBT marts + Airflow DAG ✅
+2. **Live stream** — Divvy GBFS → Kafka → Spark Structured Streaming → Postgres ✅
+3. **Observability** — Grafana dashboards, DBT tests, Airflow robustness ✅
+4. **Cloud migration** — Terraform → BigQuery + GCS ✅ (4.1-4.3), Airbyte ingestion (4.4 next)
 5. **CI/CD integration** — GitHub Actions, branch protection, PR checks, versioned releases
 
 Each phase is a working system before the next begins. See `AGENTS.md` for phase gates.
@@ -164,26 +208,32 @@ chicago-data-pipeline/
 ├── README.md                 # this file
 ├── changelog.md              # errors, fixes, lessons (read before working)
 ├── chicago-pipeline-plan.md  # full phased design
-├── docker-compose.yml        # 11 services: Postgres, Spark, Airflow, Kafka, Zookeeper, Grafana + spark_checkpoints + grafana_data volumes
+├── docker-compose.yml        # 11 services: Postgres, Spark, Airflow, Kafka, Zookeeper, Grafana + GCP credentials mounts (Phase 4.3)
 ├── init.sql                  # Postgres init: 3 schemas + airflow DB
 ├── pyproject.toml            # uv project mode (host Python)
 ├── uv.lock                   # reproducible installs
+├── terraform/                # Phase 4.2 — GCP infra as code
+│   ├── providers.tf          # Google provider v7.40.0, auths via SA key
+│   ├── variables.tf          # 4 inputs (project_id, region, location, credentials_path)
+│   ├── main.tf               # 3 resources: 2 BigQuery datasets + 1 GCS bucket
+│   ├── terraform.tfvars      # gitignored — actual values
+│   └── terraform.tfvars.example  # template
 ├── airflow/
-│   ├── Dockerfile            # Airflow 3.0 + Docker CLI + pip install as airflow user (kafka-python)
+│   ├── Dockerfile            # Airflow 3.0 + Docker CLI + gcloud SDK (bq CLI) + pip install as airflow user
 │   ├── passwords.json        # SimpleAuthManager passwords
-│   ├── requirements.txt      # postgres + docker providers + ingestion deps + kafka-python
+│   ├── requirements.txt      # postgres + docker providers + kafka-python + google-cloud-bigquery
 │   ├── dags/
-│   │   ├── crime_batch_dag.py     # Phase 1.5 — batch pipeline DAG (Phase 3.3: +SqlSensor, retries, callback)
-│   │   ├── divvy_stream_dag.py    # Phase 2.6 — streaming lifecycle DAG (Phase 3.3: +retries, callback)
+│   │   ├── crime_batch_dag.py     # Phase 4.3 — download → spark → bq_load → dbt_build → record_results (5 tasks)
+│   │   ├── divvy_stream_dag.py    # Phase 2.6 — streaming lifecycle DAG
 │   │   └── callbacks.py           # Phase 3.3 — shared on_failure_callback
 │   ├── scripts/
 │   │   └── record_dbt_results.py  # Phase 3.2 — parses dbt run_results.json → observability.dbt_test_results
-│   └── dbt_profiles/profiles.yml
+│   └── dbt_profiles/profiles.yml  # Phase 4.3 — BigQuery adapter (service-account key auth)
 ├── spark/
-│   ├── Dockerfile            # apache/spark:3.5.1 + JDBC + Kafka connector (4 JARs) + entrypoint
+│   ├── Dockerfile            # apache/spark:3.5.1 + JDBC + Kafka connector (4 JARs) + GCS connector + entrypoint
 │   ├── entrypoint.sh         # chowns checkpoint volume, drops to spark via gosu
 │   └── jobs/
-│       ├── crime_batch.py    # Spark batch ETL: Parquet → clean → Postgres (Phase 1.3)
+│       ├── crime_batch.py    # Phase 4.3 — Spark batch: Parquet → clean → GCS Parquet (was Postgres)
 │       └── divvy_stream.py   # Spark Structured Streaming: Kafka → Postgres (Phase 2.4)
 ├── ingestion/
 │   └── download_crime.py     # Socrata API → Parquet (Phase 1.2)
@@ -195,30 +245,30 @@ chicago-data-pipeline/
 │   │   ├── datasources/postgres.yml  # 2 Postgres datasources (chicago-analytics + airflow-metadata)
 │   │   └── dashboards/dashboards.yml # dashboard provider (scans every 30s)
 │   └── dashboards/
-│       ├── pipeline_health.json      # 11-panel pipeline health dashboard (Phase 3.1 + 3.2 DBT panel + 3.3 failed-tasks panel)
+│       ├── pipeline_health.json      # 11-panel pipeline health dashboard
 │       └── crime_divvy_analysis.json # 6-panel crime + Divvy analysis dashboard
-├── dbt/                      # DBT transformation project
-│   ├── Dockerfile             # separate dbt image (protobuf conflict with Airflow 3.0)
+├── dbt/                      # DBT transformation project (Phase 4.3 — dbt-bigquery)
+│   ├── Dockerfile             # dbt-bigquery==1.12.0 (was dbt-postgres==1.10.2)
 │   ├── dbt_project.yml       # model config, materialization, schema mapping
-│   ├── profiles.yml          # Postgres connection (gitignored — has password)
+│   ├── profiles.yml          # BigQuery connection (gitignored — has keyfile path)
 │   ├── packages.yml          # dbt-expectations 0.10.10
 │   ├── macros/
-│   │   ├── try_cast.sql      # warehouse-portable cast macro
+│   │   ├── try_cast.sql      # warehouse-portable cast macro (Postgres + BigQuery branches)
 │   │   └── generate_schema_name.sql  # override schema concatenation
 │   ├── models/
 │   │   ├── staging/
-│   │   │   ├── stg_crime_events.sql      # view: rename, cast, dedup
-│   │   │   ├── stg_station_status.sql    # Phase 2.5 — dedup on Kafka coordinates
+│   │   │   ├── stg_crime_events.sql      # Phase 4.3 — QUALIFY + SAFE_CAST (was DISTINCT ON + ::type)
+│   │   │   ├── stg_station_status.sql    # Phase 2.5 — excluded from BigQuery build (--exclude)
 │   │   │   └── schema.yml
 │   │   └── marts/
-│   │       ├── dim_date.sql              # spans both crime (2023) + station (2026) dates
-│   │       ├── dim_community_area.sql
+│   │       ├── dim_date.sql              # Phase 4.3 — crime dates only, GENERATE_DATE_ARRAY (was generate_series + station UNION)
+│   │       ├── dim_community_area.sql    # Phase 4.3 — CAST AS INT64/STRING (was ::int/::text)
 │   │       ├── dim_crime_type.sql
-│   │       ├── fact_crime_events.sql
-│   │       ├── fact_station_reads.sql    # Phase 2.5 — one row per station poll
+│   │       ├── fact_crime_events.sql     # Phase 4.3 — DATE() (was ::date)
+│   │       ├── fact_station_reads.sql    # Phase 2.5 — excluded from BigQuery build (--exclude)
 │   │       └── schema.yml
 │   ├── tests/
-│   │   └── assert_crime_in_chicago_bounds.sql  # Phase 3.2 — singular bounds test (lat 41.64–42.03, lon -87.95–-87.52)
+│   │   └── assert_crime_in_chicago_bounds.sql  # Phase 3.2 — singular bounds test
 │   └── seeds/
 │       └── community_areas.csv  # 77 community areas from Chicago Data Portal
 ├── data/                     # Parquet output (gitignored)
@@ -229,15 +279,17 @@ chicago-data-pipeline/
 │   └── 2026-07-*/            # date-sorted topic chunks
 └── docs/
     ├── knowledge/               # reference: one file per topic (index.md for directory)
+    │   ├── gcp.md              # Phase 4.1+4.3 — GCP auth, bq CLI vs Python, BigQuery SQL dialect
+    │   └── terraform.md        # Phase 4.2 — Terraform concepts, workflow, errors
     ├── learning-protocol.md       # Socratic mode rules
     ├── operations-performed.md    # audit trail of what was built
     ├── phases/                    # phase-completion docs (one per sub-phase)
     │   ├── README.md
     │   ├── TEMPLATE.md
     │   ├── phase-1.1-docker.md through phase-1.6-verification.md
-    │   ├── phase-2.1-gbfs-data-source.md through phase-2.5-dbt-stream-models.md
-    │   ├── phase-2.6-airflow-stream-dag.md
-    │   └── phase-3.1-grafana.md through phase-3.4-verification.md  # Phase 3 completion docs
+    │   ├── phase-2.1-gbfs-data-source.md through phase-2.6-airflow-stream-dag.md
+    │   ├── phase-3.1-grafana.md through phase-3.4-verification.md
+    │   └── phase-4.1-gcp-setup.md through phase-4.3-architecture-change.md  # Phase 4 completion docs
     └── conventions/
         ├── airflow.md
         ├── dbt.md
@@ -251,6 +303,7 @@ chicago-data-pipeline/
 - Docker Desktop with WSL2 backend
 - WSL2 (Ubuntu) — project lives on the WSL filesystem (`~/chicago-data-pipeline/`)
 - [uv](https://docs.astral.sh/uv/) installed on host
+- **GCP account** (Phase 4+) — service account key at `~/chicago-divvy-pipeline-credentials.json`. See `docs/knowledge/gcp.md` for setup. Required for BigQuery + GCS access.
 
 ### First run
 
@@ -301,7 +354,10 @@ docker compose down                        # stop (preserves data)
 docker compose down -v                     # stop + WIPE all data
 ```
 ### Running the pipeline (via Airflow)
-**Note:** The `crime_batch` DAG has a `SqlSensor` (`wait_for_stream_data`) that gates `dbt_build` on `raw.station_status` existing. This fixes the race condition with `divvy_stream` — `crime_batch` will wait (up to 1hr, poking every 60s) for the stream table to exist before building marts. On a cold start you can trigger either DAG first; the sensor handles the ordering. If you want to avoid the wait, trigger `divvy_stream` first.
+
+**Phase 4.3 change:** The `crime_batch` DAG no longer has the `wait_for_stream_data` sensor (dim_date is crime-only now, no cross-DAG dependency). The DAG runs 5 tasks: `download_crime` → `spark_crime_batch` → `bq_load_crime` → `dbt_build` → `record_dbt_results`. The `divvy_stream` DAG runs independently against local Postgres.
+
+**Prerequisites:** GCP credentials at `~/chicago-divvy-pipeline-credentials.json` (chmod 644), `.env` with GCP vars (`GCP_CREDENTIALS_PATH`, `GCP_PROJECT_ID`, `GCS_BUCKET`, `BIGQUERY_LOCATION`).
 
 ```bash
 # 1. Start all services
@@ -310,19 +366,21 @@ docker compose up -d
 # 2. Wait for services to be healthy (~90s)
 docker compose ps -a
 
-# 3. Trigger divvy_stream DAG FIRST (streaming pipeline creates raw.station_status)
-docker exec chicago-data-pipeline-airflow-scheduler-1 airflow dags trigger divvy_stream
-
-# 4. Wait for it to finish, then trigger crime_batch DAG (batch pipeline)
+# 3. Trigger crime_batch DAG (batch pipeline → GCS → BigQuery)
 docker exec chicago-data-pipeline-airflow-scheduler-1 airflow dags trigger crime_batch
 
-# 5. Query marts
-docker compose exec postgres psql -U chicago -d chicago_analytics -c "SELECT COUNT(*) FROM mart.fact_crime_events;"
+# 4. (Optional) Trigger divvy_stream DAG (streaming pipeline → local Postgres)
+docker exec chicago-data-pipeline-airflow-scheduler-1 airflow dags trigger divvy_stream
+
+# 5. Query BigQuery marts
+bq query --use_legacy_sql=false "SELECT COUNT(*) FROM \`chicago-divvy-pipeline.mart.fact_crime_events\`"
+
+# 6. Query local Postgres marts (streaming)
 docker compose exec postgres psql -U chicago -d chicago_analytics -c "SELECT COUNT(*) FROM mart.fact_station_reads;"
 ```
 
+The crime_batch DAG runs 5 tasks: download_crime → spark_crime_batch → bq_load_crime → dbt_build → record_dbt_results (~4 min total).
 The divvy_stream DAG runs 8 tasks: create_topic → start_producer → start_stream → wait_for_data → dbt_build → record_dbt_results → stop_stream → stop_producer (~60s total).
-The crime_batch DAG runs 6 tasks: download_crime → clear_dbt_schemas → spark_crime_batch → wait_for_stream_data (SqlSensor) → dbt_build → record_dbt_results (~165s total).
 
 ### Running pipeline steps manually (for debugging)
 
@@ -331,11 +389,14 @@ The crime_batch DAG runs 6 tasks: download_crime → clear_dbt_schemas → spark
 source .venv/bin/activate
 python ingestion/download_crime.py --year 2023
 
-# 2. Run Spark batch job: Parquet → clean → Postgres raw.crime_events
+# 2. Run Spark batch job: Parquet → clean → GCS Parquet
 docker compose exec spark-master /opt/spark/bin/spark-submit --master local[*] /opt/spark/jobs/crime_batch.py
 
-# 3. Run DBT: seed + staging + marts + tests (from inside dbt/ dir)
-cd dbt && dbt build --profiles-dir .
+# 3. Load GCS Parquet → BigQuery
+bq load --replace --source_format=PARQUET --project_id=chicago-divvy-pipeline raw.crime_events gs://chicago-divvy-pipeline-data-lake/raw/crime/*.parquet
+
+# 4. Run DBT: seed + staging + marts + tests (against BigQuery)
+cd dbt && dbt build --profiles-dir . --exclude stg_station_status fact_station_reads
 ```
 
 ## Documentation

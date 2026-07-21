@@ -18,6 +18,26 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends docker.io \
     && rm -rf /var/lib/apt/lists/*
 
+# ============================================================
+# Google Cloud SDK (Phase 4.3 — bq load task)
+# ============================================================
+# Airflow needs the `bq` CLI to load GCS Parquet → BigQuery.
+# The bq CLI is part of the Google Cloud SDK.
+#
+# Auth: GOOGLE_APPLICATION_CREDENTIALS env var (set in docker-compose.yml)
+# points to the mounted service account key file. The bq CLI picks it up
+# automatically — no `gcloud auth login` needed (that's for humans).
+#
+# We install the minimal gcloud SDK (no extras) to keep the image small.
+# The key file is mounted read-only at /opt/airflow/gcp-credentials.json.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends apt-transport-https ca-certificates gnupg curl \
+    && curl -sL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" > /etc/apt/sources.list.d/google-cloud-sdk.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends google-cloud-cli \
+    && rm -rf /var/lib/apt/lists/*
+
 # Add airflow user to the docker group so it can access docker.sock.
 # The docker.io package creates a "docker" group at an arbitrary GID, but
 # it must match the host's docker.sock GID for the airflow user to access it.

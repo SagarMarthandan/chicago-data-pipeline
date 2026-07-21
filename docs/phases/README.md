@@ -58,3 +58,9 @@ chat-history/current-state.md       ← handoff for the NEXT session
 | `phase-2.5-dbt-stream-models.md` | DBT models for stream (stg_station_status + fact_station_reads) | Complete |
 | `phase-2.6-airflow-stream-dag.md` | Airflow DAG for stream (start/monitor producer + streaming) | Complete |
 | `phase-3.1-grafana.md` | Grafana service + datasources + dashboards | Complete |
+| `phase-3.2-dbt-tests.md` | DBT tests + results recorder + Grafana panel | Complete |
+| `phase-3.3-airflow-robustness.md` | Airflow retries, sensors, callbacks, timeouts | Complete |
+| `phase-3.4-verification.md` | Phase 3 end-to-end verification (break + observe) | Complete |
+| `phase-4.1-gcp-setup.md` | GCP project, service account, API enablement | Complete |
+| `phase-4.2-terraform.md` | Terraform: BigQuery datasets + GCS bucket | Complete |
+| `phase-4.3-architecture-change.md` | Batch pipeline Postgres → GCS/BigQuery | Complete |

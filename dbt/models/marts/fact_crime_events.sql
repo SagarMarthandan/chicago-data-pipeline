@@ -11,7 +11,7 @@
 SELECT
     c.crime_id,
     c.occurred_at,
-    c.occurred_at::date AS date_key,
+    DATE(c.occurred_at) AS date_key,
     c.community_area_id,
     c.primary_type || '|' || c.description AS crime_type_key,
     c.arrest,
