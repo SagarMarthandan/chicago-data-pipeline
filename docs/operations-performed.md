@@ -28,6 +28,7 @@ A chronological log of operations, files created, and structural changes made to
 - [2026-07-20 — Phase 3.2: DBT Tests](#2026-07-20--phase-32-dbt-tests)
 - [2026-07-20 — Phase 3.3: Airflow Robustness](#2026-07-20--phase-33-airflow-robustness)
 - [2026-07-20 — Phase 3.4: Verification](#2026-07-20--phase-34-verification)
+- [2026-07-21 — Phase 4.1: Warehouse Choice + GCP Project Setup](#2026-07-21--phase-41-warehouse-choice--gcp-project-setup)
 ---
 
 ## 2026-07-08 — Project Setup & Migration
@@ -909,3 +910,33 @@ Phase 3 (Observability) requires Grafana dashboards for pipeline health and anal
 - Breaking the pipeline (stop the producer) shows up as a Grafana alert within minutes ✅ (Scenario 1 — panel red at 900s threshold)
 - DBT tests catch a deliberately introduced data quality issue ✅ (Scenario 2 — 2 tests failed on bad lat/lon)
 - Airflow retries a deliberately failing task and alerts on SLA miss ✅ (Scenario 3 — 4 attempts, callback fired, Grafana failed-tasks panel red. Note: Airflow 3.0 removed SLA feature; used execution_timeout + failed-tasks panel instead.)
+
+## 2026-07-21 — Phase 4.1: Warehouse Choice + GCP Project Setup
+
+**Phase 4 (Cloud) started.** Goal: move warehouse to cloud (BigQuery) and answer the driving question (crime vs ridership) using full historical data. Phase 4.1 is the warehouse decision + GCP environment setup — no code written, all infrastructure plumbing.
+
+### Warehouse decision: BigQuery
+Chose BigQuery over Snowflake/Redshift. Rationale documented in `docs/knowledge/gcp.md` + `chicago-pipeline-plan.md` §4.1. Key reasons: free tier covers project entirely ($0), serverless (no warehouse sizing/suspend-resume to learn alongside Terraform+Airbyte+partitioning), DBT integration is first-class (one-line adapter switch), dominant cloud warehouse in the market.
+
+### GCP project + auth setup (environment plumbing)
+Ran gcloud CLI on **Windows PowerShell** (browser auth needs Windows), moved credentials to WSL (where Terraform + repo live). Full step-by-step + pitfalls documented in `docs/knowledge/gcp.md`.
+
+**Resources created on GCP:**
+- Project: `chicago-divvy-pipeline` (ID `480666653891`, name "Chicago Divvy Pipeline")
+- Billing account linked: `01A22E-2FC963-7B008D`
+- APIs enabled: `bigquery.googleapis.com`, `storage.googleapis.com`, `cloudresourcemanager.googleapis.com`
+- Service account: `terraform-runner@chicago-divvy-pipeline.iam.gserviceaccount.com`
+- Roles granted: `bigquery.dataOwner`, `bigquery.jobUser`, `storage.admin`, `iam.serviceAccountTokenCreator` (scoped — NOT `roles/owner`)
+- Service account key downloaded → `~/chicago-divvy-pipeline-credentials.json` (chmod 600, gitignored)
+
+**Files created/modified:**
+- `docs/knowledge/gcp.md` — NEW. Comprehensive GCP reference: auth model (two layers), setup process, WSL vs Windows command differences, pitfalls/risks/cautions, our setup, useful commands.
+- `docs/knowledge/index.md` — MODIFIED. Added `gcp.md` row to sections table.
+- `.gitignore` — MODIFIED. Added `*-credentials.json`, `credentials.json`, `google-credentials.json` patterns to prevent committing GCP keys.
+
+**Why this matters:** Terraform (Phase 4.2) auths to GCP via the service account key, not via `gcloud auth login`. The service account has scoped roles (least privilege) — if the key leaks, blast radius is limited to BigQuery + Storage, not project deletion. The two-layer auth model (human Gmail for setup, service account for automation) is the core concept.
+
+**Errors hit:** 2 (documented in changelog + gcp.md) — (1) `~` not expanded by gcloud (Python tool treats it as literal path), (2) `\` line continuation fails in PowerShell (uses backtick, not backslash).
+
+### Next — Phase 4.2: Terraform
+Write `terraform/main.tf` + `providers.tf` + `variables.tf` + `terraform.tfvars` to provision: `google_bigquery_dataset.raw`, `google_bigquery_dataset.mart`, `google_storage_bucket.data_lake`. Local state first; migrate to GCS backend later.

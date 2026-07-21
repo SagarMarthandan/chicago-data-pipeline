@@ -19,6 +19,7 @@ Reference material, useful commands, and explanations accumulated throughout the
 | [data-sources.md](data-sources.md) | Data Sources | Chicago Crime Socrata API reference, Divvy GBFS API reference |
 | [mermaid-syntax.md](mermaid-syntax.md) | Mermaid Syntax | Quoting rules for special characters, scanner script |
 | [grafana.md](grafana.md) | Grafana | Core concepts (datasource, dashboard, panel, query, provisioning), our setup, file-based provisioning, env var interpolation gotcha (`$VAR` not `{{.VAR}}`), `jsonData.database` deep dive (browser vs API code paths), two-datasource pattern for separate Postgres databases, dashboard inventory (11 panels), DAG run order (sensor fixes race), useful commands, 10 common mistakes, 8 mermaid diagrams, **Phase 3.2–3.4** (DBT test panel, failed-tasks panel, panel thresholds as alerts, verification approach) |
+| [gcp.md](gcp.md) | Google Cloud Platform | GCP auth model (two layers: human Gmail vs service account), setup process (project, billing, APIs, service account, roles, key), WSL vs Windows/PowerShell command differences, pitfalls/risks/cautions, our Phase 4.1 setup, useful commands |
 
 ## How to Use
 

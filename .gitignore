@@ -3,6 +3,11 @@
 .env.*
 !.env.example
 
+# GCP credentials (Phase 4) — never commit service account keys
+*-credentials.json
+credentials.json
+google-credentials.json
+
 # Docker
 docker-compose.override.yml
 

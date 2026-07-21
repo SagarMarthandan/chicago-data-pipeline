@@ -796,3 +796,31 @@ No errors encountered. All 59 DBT tests passed on first run.
 - **`on_failure_callback` fires only after all retries are exhausted** — the callback logged `try=4` (the final attempt), not on each individual retry. This is the correct behavior — you want to alert once after retries are exhausted, not on every transient failure.
 - **Throwaway DAGs are the right way to test failure handling** — creating a temporary DAG with `exit 1` tests retries + callbacks without risking production DAGs or needing to modify them. Delete the DAG file + run `airflow dags delete` to clean up metadata.
 - **Manual `dbt build` is correct when you need to preserve test data** — triggering the crime_batch DAG would re-run `spark_crime_batch` and overwrite the injected bad row. Running `dbt build` manually (with the same image/paths from the DAG) preserves the bad row through the dbt build step.
+
+## 2026-07-21 — Phase 4.1: Warehouse Choice + GCP Project Setup
+
+### Changes
+- Chose BigQuery as cloud warehouse (over Snowflake/Redshift). Free tier, serverless, DBT first-class.
+- Created GCP project `chicago-divvy-pipeline` via gcloud CLI.
+- Linked billing account, enabled BigQuery + Storage + Resource Manager APIs.
+- Created service account `terraform-runner` with 4 scoped roles (NOT owner).
+- Downloaded service account key to `~/chicago-divvy-pipeline-credentials.json` (chmod 600).
+- Updated `.gitignore` to exclude `*-credentials.json` + variants.
+- Created `docs/knowledge/gcp.md` — comprehensive GCP reference (auth model, setup, WSL vs Windows, pitfalls).
+
+### Errors & Fixes
+
+| # | Error | Root Cause | Fix |
+|---|---|---|---|
+| 1 | `gcloud iam service-accounts keys create ~/file.json` → `No such file or directory: '~/file.json'` | gcloud is a Python tool; it does NOT expand `~`. It treats `~/file.json` as a literal filename. | Used explicit path: `C:\Users\sagar\file.json` on Windows, then `cp` to WSL. |
+| 2 | `gcloud iam service-accounts create terraform-runner \` → `unrecognized arguments: \` | PowerShell uses backtick (`` ` ``) for line continuation, not backslash (`\`). Bash uses `\`. | Put command on one line (no continuation), or use backtick in PowerShell. |
+| 3 | `gcloud beta billing accounts list` → `You do not currently have this command group installed` | `beta` gcloud components not installed by default. | Ran `gcloud components install beta`. |
+
+### Lessons Summary
+- **GCP has two layers of identity** — personal Gmail (human, used once via browser for setup) vs service account (machine, used by Terraform via `credentials.json`). Confusing them is the #1 Terraform-on-GCP auth stumbling block. See `docs/knowledge/gcp.md`.
+- **Service account keys are passwords** — `chmod 600`, gitignore, never commit, never paste. A leaked key grants whatever roles the service account has. Grant scoped roles (bigquery.dataOwner, storage.admin), NOT `roles/owner`.
+- **`~` is not expanded by gcloud** — it's a Python tool, not a shell. Always use explicit absolute paths for file output (`/home/sagar/...` on WSL, `C:\Users\sagar\...` on Windows).
+- **PowerShell ≠ bash for line continuation** — PowerShell uses backtick `` ` ``, bash uses backslash `\`. When following bash-style multi-line commands in PowerShell, either use backtick or put the command on one line.
+- **Browser auth requires Windows, not WSL** — `gcloud auth login` opens a browser; WSL has no browser. Run gcloud auth on Windows PowerShell, then move artifacts (credentials.json) to WSL via `/mnt/c/Users/sagar/`.
+- **Billing account is required even for free tier** — BigQuery free tier (1 TB queries/mo + 10 GB storage/mo) won't activate without a billing account linked. You won't be charged if you stay in limits, but the card must be on file.
+- **APIs are off by default** — `PERMISSION_DENIED: ... API has not been used in project ... or it is disabled` means you skipped `gcloud services enable`. Enable BigQuery + Storage + Resource Manager before Terraform.
