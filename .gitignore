@@ -8,6 +8,15 @@
 credentials.json
 google-credentials.json
 
+# Terraform (Phase 4) — state files + tfvars are environment-specific
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/terraform.tfvars
+terraform/*.tfvars.local
+terraform/crash.log
+terraform/crash.*.log
+
 # Docker
 docker-compose.override.yml
 
@@ -76,12 +85,6 @@ pgdata/
 
 # Grafana
 grafana/data/
-
-# Terraform
-terraform/.terraform/
-terraform/*.tfstate
-terraform/*.tfstate.*
-terraform/*.tfvars
 
 # IDE / Editor
 .vscode/*

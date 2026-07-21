@@ -128,10 +128,18 @@ This project runs gcloud on **Windows PowerShell** (browser auth) and Terraform 
 | File permissions | `chmod 600` works | No chmod concept (NTFS ACLs instead) |
 
 ### Pitfalls hit during setup
-1. **`~` not expanded by gcloud** — `gcloud iam service-accounts keys create ~/file.json` fails with `No such file or directory: '~/file.json'`. gcloud (Python) treats `~` as literal. Fix: use explicit path (`C:\Users\sagar\file.json` on Windows, `/home/sagar/file.json` on WSL).
+1. **`~` not expanded by gcloud** — `gcloud iam service-accounts keys create ~/file.json` fails with `No such file or directory: '~/file.json'`. gcloud (Python) treats `~` as literal. Fix: use explicit path (`C:\Users\sagar\file.json` on Windows, `/home/sagar/file.json` on WSL). Also affects `gcloud auth activate-service-account --key-file=~/...` — use `/home/sagar/...`.
 2. **`\` line continuation fails in PowerShell** — `gcloud iam service-accounts create terraform-runner \` → `unrecognized arguments: \`. PowerShell uses backtick `` ` ``, not backslash. Fix: put command on one line, or use backtick.
 3. **`gcloud beta` not installed by default** — `gcloud beta billing accounts list` → `You do not currently have this command group installed`. Fix: `gcloud components install beta`.
 4. **Browser auth doesn't work in WSL** — `gcloud auth login` tries to open a browser; WSL has no browser. Fix: run gcloud auth in PowerShell on Windows, then move artifacts (credentials.json) to WSL.
+5. **WSL gcloud has separate config + auth state from Windows gcloud** — `gcloud config set project` in PowerShell does NOT carry over to WSL. WSL maintains its own config at `~/.config/gcloud/`. After moving the key to WSL, you must also (a) `gcloud config set project chicago-divvy-pipeline` in WSL, and (b) auth WSL gcloud. Since WSL can't do browser auth, use the service account key:
+   ```bash
+   gcloud auth activate-service-account terraform-runner@chicago-divvy-pipeline.iam.gserviceaccount.com \
+     --key-file=/home/sagar/chicago-divvy-pipeline-credentials.json
+   gcloud config set account terraform-runner@chicago-divvy-pipeline.iam.gserviceaccount.com
+   ```
+   This is how CI/CD and automation auth too — non-interactive, key-based.
+6. **`gcloud services list` fails with AUTH_PERMISSION_DENIED for the SA** — expected, not a bug. The scoped roles (bigquery.dataOwner, storage.admin, etc.) deliberately do NOT include `serviceusage.services.list` (that's an admin role). Least privilege working as designed. Verify APIs from your personal Gmail in PowerShell instead. The SA CAN run `bq ls` + `gsutil ls` — those permissions are in its roles.
 
 ## Pitfalls, Risks, Cautions
 
@@ -201,23 +209,36 @@ gcloud projects get-iam-policy PROJECT_ID     # see all bindings
 gcloud iam service-accounts keys create PATH.json --iam-account=SA_EMAIL
 gcloud iam service-accounts keys list --iam-account=SA_EMAIL
 
-# BigQuery (preview — Terraform will manage these soon)
-bq ls --project_id=PROJECT_ID                 # list datasets
-bq mk --dataset PROJECT_ID:dataset_name       # create dataset (don't — use Terraform)
-bq query --use_legacy_sql=false 'SELECT ...'  # run a query
+# BigQuery (Terraform manages datasets — these are for verification only)
+bq ls                                         # list datasets in current project
+bq ls --project_id=PROJECT_ID                 # explicit project
+bq show PROJECT_ID:dataset                    # dataset details
+bq query --use_legacy_sql=false 'SELECT ...'  # run a query (standard SQL)
 
 # GCS
-gsutil ls                                     # list buckets
+gsutil ls                                     # list buckets (deprecated — see note below)
+gcloud storage ls                             # newer equivalent (Google is phasing out gsutil)
+gsutil ls gs://BUCKET_NAME/                   # list objects in a bucket
 gsutil mb gs://BUCKET_NAME                    # create bucket (don't — use Terraform)
 ```
 
-## What's Next (Phase 4.2 — Terraform)
+### gsutil deprecation note
+`gsutil` commands print: *"Google recommends using Gcloud storage CLI instead of gsutil."* Google is phasing out `gsutil` in favor of `gcloud storage` (e.g., `gcloud storage ls` instead of `gsutil ls`). Both work for now; `gsutil` is fine for this project. Migration guide: https://docs.cloud.google.com/storage/docs/gsutil-transition-to-gcloud
 
-The GCP project is the container. Terraform (next) creates the actual resources inside it:
-- `google_bigquery_dataset.raw` — raw landing zone
-- `google_bigquery_dataset.mart` — DBT-built analytics marts
-- `google_storage_bucket.data_lake` — GCS bucket for Parquet (Spark writes here instead of Postgres)
+## Terraform
 
-Terraform auths to GCP via the service account key (`~/chicago-divvy-pipeline-credentials.json`), NOT via `gcloud auth login`. The key file path is passed to the Google provider in `providers.tf` via a variable.
+Terraform provisions the cloud resources (BigQuery datasets + GCS bucket) inside the GCP project. It auths to GCP via the service account key created in Steps 5–7 above — NOT via `gcloud auth login`.
+
+**Full Terraform reference:** [`docs/knowledge/terraform.md`](terraform.md) — concepts, workflow, file structure, key decisions, errors hit (including the WSL gcloud account-switch issue), verification, useful commands.
+
+What Terraform created (verified 2026-07-21): `google_bigquery_dataset.raw`, `google_bigquery_dataset.mart`, `google_storage_bucket.data_lake`.
+
+## What's Next (Phase 4.3 — Architecture change)
+
+GCP containers exist. Next: make the pipeline use them.
+- Spark writes to GCS (Parquet) instead of Postgres
+- Airbyte replaces `download_crime.py` (Socrata source → BigQuery destination)
+- DBT `profiles.yml` switches Postgres → BigQuery adapter
+- Streaming path decision: keep on Postgres (small data) or move to BigQuery via `foreachBatch` → GCS → BigQuery load job
 
 ---

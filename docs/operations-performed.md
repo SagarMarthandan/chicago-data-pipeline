@@ -29,6 +29,7 @@ A chronological log of operations, files created, and structural changes made to
 - [2026-07-20 — Phase 3.3: Airflow Robustness](#2026-07-20--phase-33-airflow-robustness)
 - [2026-07-20 — Phase 3.4: Verification](#2026-07-20--phase-34-verification)
 - [2026-07-21 — Phase 4.1: Warehouse Choice + GCP Project Setup](#2026-07-21--phase-41-warehouse-choice--gcp-project-setup)
+- [2026-07-21 — Phase 4.2: Terraform (BigQuery + GCS provisioning)](#2026-07-21--phase-42-terraform-bigquery--gcs-provisioning)
 ---
 
 ## 2026-07-08 — Project Setup & Migration
@@ -940,3 +941,34 @@ Ran gcloud CLI on **Windows PowerShell** (browser auth needs Windows), moved cre
 
 ### Next — Phase 4.2: Terraform
 Write `terraform/main.tf` + `providers.tf` + `variables.tf` + `terraform.tfvars` to provision: `google_bigquery_dataset.raw`, `google_bigquery_dataset.mart`, `google_storage_bucket.data_lake`. Local state first; migrate to GCS backend later.
+
+## 2026-07-21 — Phase 4.2: Terraform (BigQuery + GCS provisioning)
+
+**Phase 4.2 complete.** Wrote Terraform config to provision the cloud containers (2 BigQuery datasets + 1 GCS bucket), ran `terraform init`/`plan`/`apply`, verified resources exist.
+
+### Files created
+- `terraform/providers.tf` — Google provider config (v7.40.0 pinned `~> 7.40`). Auths via service account key file path (variable), NOT `gcloud auth login`.
+- `terraform/variables.tf` — 4 input variables: `project_id`, `region` (default `US`), `credentials_path` (sensitive), `bucket_name`.
+- `terraform/main.tf` — 3 resources: `google_bigquery_dataset.raw`, `google_bigquery_dataset.mart`, `google_storage_bucket.data_lake`. Key decisions: `delete_contents_on_destroy=true` (learning project, re-run from scratch), `force_destroy=true` on bucket, 90-day lifecycle auto-delete on bucket objects, `uniform_bucket_level_access=true`.
+- `terraform/terraform.tfvars` — actual values (GITIGNORED — environment-specific).
+- `terraform/terraform.tfvars.example` — template to copy from (committable).
+
+### Files modified
+- `.gitignore` — added Terraform patterns (`terraform/.terraform/`, `*.tfstate`, `*.tfstate.*`, `terraform.tfvars`, `*.tfvars.local`, `crash.log`). Removed older duplicate block.
+- `docs/knowledge/gcp.md` — expanded with 2 new WSL pitfalls (#5 separate WSL auth state, #6 least-privilege SA can't list APIs), Terraform section (file structure, workflow, key decisions, what was created), gsutil deprecation note, updated useful commands.
+- `docs/knowledge/index.md` — updated `gcp.md` description.
+
+### Resources created on GCP (verified)
+| Resource | Verified via |
+|---|---|
+| `google_bigquery_dataset.raw` | `bq ls` → shows `raw` |
+| `google_bigquery_dataset.mart` | `bq ls` → shows `mart` |
+| `google_storage_bucket.data_lake` (`gs://chicago-divvy-pipeline-data-lake`) | `gsutil ls` → shows bucket |
+
+### Errors hit
+1. **WSL gcloud had separate config + auth state from Windows** — `gcloud config set project` in PowerShell didn't carry to WSL. WSL was still authed as the old `dtc-de-course` service account. Fix: `gcloud auth activate-service-account --key-file=/home/sagar/chicago-divvy-pipeline-credentials.json` in WSL (non-interactive, key-based — same way CI/CD auths).
+2. **`~` not expanded by gcloud (again)** — `gcloud auth activate-service-account --key-file=~/...` failed with `No such file or directory: '~/...'`. Fix: use `/home/sagar/...` explicit path.
+3. **`gcloud services list` failed with AUTH_PERMISSION_DENIED** — expected, not a bug. The SA's scoped roles don't include `serviceusage.services.list` (admin role). Least privilege working as designed. Verified APIs from personal Gmail in PowerShell instead; used `bq ls` + `gsutil ls` (permissions ARE in SA roles) for resource verification.
+
+### Next — Phase 4.3: Architecture change
+Make the pipeline use the cloud containers: Spark → GCS (Parquet) instead of Postgres; Airbyte replaces `download_crime.py`; DBT `profiles.yml` switches Postgres → BigQuery adapter. Streaming path decision: keep on Postgres (small data) or move to BigQuery.

@@ -1,0 +1,7 @@
+# Actual values for this environment — gitignored (environment-specific).
+# Copy this file to terraform.tfvars and fill in. DO NOT commit terraform.tfvars.
+
+project_id        = "chicago-divvy-pipeline"
+region            = "US"
+credentials_path  = "/home/sagar/chicago-divvy-pipeline-credentials.json"
+bucket_name       = "chicago-divvy-pipeline-data-lake"

@@ -824,3 +824,28 @@ No errors encountered. All 59 DBT tests passed on first run.
 - **Browser auth requires Windows, not WSL** — `gcloud auth login` opens a browser; WSL has no browser. Run gcloud auth on Windows PowerShell, then move artifacts (credentials.json) to WSL via `/mnt/c/Users/sagar/`.
 - **Billing account is required even for free tier** — BigQuery free tier (1 TB queries/mo + 10 GB storage/mo) won't activate without a billing account linked. You won't be charged if you stay in limits, but the card must be on file.
 - **APIs are off by default** — `PERMISSION_DENIED: ... API has not been used in project ... or it is disabled` means you skipped `gcloud services enable`. Enable BigQuery + Storage + Resource Manager before Terraform.
+
+## 2026-07-21 — Phase 4.2: Terraform (BigQuery + GCS provisioning)
+
+### Changes
+- Wrote Terraform config: `terraform/providers.tf` (Google provider v7.40.0, auths via SA key), `variables.tf` (4 inputs), `main.tf` (3 resources: 2 BigQuery datasets + 1 GCS bucket), `terraform.tfvars` (gitignored), `terraform.tfvars.example` (template).
+- Ran `terraform init` (provider installed), `terraform plan` (3 to add, 0 change, 0 destroy), `terraform apply` (resources created).
+- Verified: `bq ls` → `raw` + `mart` datasets; `gsutil ls` → `gs://chicago-divvy-pipeline-data-lake/`.
+- Updated `.gitignore` with Terraform state + tfvars patterns (removed older duplicate block).
+- Expanded `docs/knowledge/gcp.md` with 2 new WSL pitfalls, Terraform section, gsutil deprecation note.
+
+### Errors & Fixes
+
+| # | Error | Root Cause | Fix |
+|---|---|---|---|
+| 1 | WSL `gcloud services list` → `AUTH_PERMISSION_DENIED` authenticated as `terraform-runner@dtc-de-course-497317...` (old course project) | WSL gcloud has separate config + auth state from Windows gcloud. Windows `gcloud auth login` + `config set project` didn't carry to WSL. WSL was still authed as the old course SA. | `gcloud auth activate-service-account terraform-runner@chicago-divvy-pipeline... --key-file=/home/sagar/chicago-divvy-pipeline-credentials.json` in WSL (non-interactive, key-based — same as CI/CD auth). Then `gcloud config set account` + `config set project`. |
+| 2 | `gcloud auth activate-service-account --key-file=~/...` → `No such file or directory: '~/...'` | gcloud (Python) doesn't expand `~`. Treats it as literal path. (Same pitfall as Phase 4.1 Step 7.) | Used explicit path: `/home/sagar/chicago-divvy-pipeline-credentials.json`. |
+| 3 | `gcloud services list --enabled` → `AUTH_PERMISSION_DENIED` even after SA authed | Expected — SA's scoped roles (bigquery.dataOwner, storage.admin, etc.) deliberately exclude `serviceusage.services.list` (admin role). Least privilege working as designed. | Not a bug. Verified APIs from personal Gmail in PowerShell (already done in 4.1). Used `bq ls` + `gsutil ls` (permissions ARE in SA roles) for resource verification instead. |
+
+### Lessons Summary
+- **WSL and Windows gcloud have separate state** — config (`~/.config/gcloud/`) and auth are per-environment. Setting project/account in PowerShell does NOT carry to WSL. After moving the key to WSL, you must also `gcloud auth activate-service-account --key-file=...` + `gcloud config set project/account` in WSL.
+- **`gcloud auth activate-service-account` is the non-interactive auth path** — use it in WSL (no browser) and in CI/CD. It loads a service account key into gcloud's credential store. This is how automation auths; `gcloud auth login` (browser) is for humans only.
+- **Least privilege means some admin commands fail by design** — `gcloud services list` failing for the SA is correct. The SA can create BigQuery datasets + GCS buckets (its job) but can't administer APIs (an admin's job). If `gcloud services list` worked, you'd over-granted. Verify with `bq ls` + `gsutil ls` instead — those permissions are in the SA's roles.
+- **Terraform `delete_contents_on_destroy = true` is a learning-project tradeoff** — lets `terraform destroy` wipe data so you can re-run from scratch. NEVER set this in production — it would delete your warehouse on a typo. Same for `force_destroy = true` on buckets.
+- **Pin Terraform provider versions with `~>`** — `~> 7.40` allows patch updates (7.40.1, 7.40.2) but blocks minor versions (7.41) that could change behavior. Stable, non-experimental versions per user preference.
+- **`terraform.tfstate` is the source of truth for what Terraform manages** — gitignored (contains resource IDs + some metadata). Lose it and Terraform can't destroy cleanly. Local state is fine for one operator; migrate to GCS backend for team use (plan says later).
