@@ -12,7 +12,7 @@
 -- This singular test exists alongside those column tests because a
 -- combined lat/long check is clearer to read in one place than two
 -- independent column-range tests, and it is the example custom test
--- called out in chicago-pipeline-plan.md (Phase 3.2).
+-- called out in docs/chicago-pipeline-plan.md (Phase 3.2).
 --
 -- Rows with NULL lat/long are excluded (~0.8% of events) — missing
 -- location is already covered by an accepted-null contract, not a

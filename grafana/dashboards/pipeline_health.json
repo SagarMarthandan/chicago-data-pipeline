@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Phase 3.1 — Pipeline health: row counts, stream freshness, DBT test pass/fail, Airflow DAG run status. Reads from Postgres (chicago_analytics + airflow_metadata).",
+  "description": "Phase 3.1 \u2014 Pipeline health: row counts, stream freshness, DBT test pass/fail, Airflow DAG run status. Reads from Postgres (chicago_analytics + airflow_metadata).",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
@@ -25,7 +25,7 @@
   "panels": [
     {
       "datasource": {
-        "type": "postgres",
+        "type": "grafana-postgresql-datasource",
         "uid": "chicago-analytics"
       },
       "description": "Total rows in raw.crime_events. A drop or stall indicates a Spark batch failure.",
@@ -82,7 +82,7 @@
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
+            "type": "grafana-postgresql-datasource",
             "uid": "chicago-analytics"
           },
           "editorMode": "code",
@@ -97,7 +97,7 @@
     },
     {
       "datasource": {
-        "type": "postgres",
+        "type": "grafana-postgresql-datasource",
         "uid": "chicago-analytics"
       },
       "description": "Total rows in mart.fact_crime_events. Should match raw count (minus null crime_id rows).",
@@ -154,7 +154,7 @@
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
+            "type": "grafana-postgresql-datasource",
             "uid": "chicago-analytics"
           },
           "editorMode": "code",
@@ -169,7 +169,7 @@
     },
     {
       "datasource": {
-        "type": "postgres",
+        "type": "grafana-postgresql-datasource",
         "uid": "chicago-analytics"
       },
       "description": "Total rows in raw.station_status. Grows with each streaming micro-batch (~1,128 rows/poll).",
@@ -226,22 +226,22 @@
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
+            "type": "grafana-postgresql-datasource",
             "uid": "chicago-analytics"
           },
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(*) AS station_rows FROM raw.station_status;",
+          "rawSql": "SELECT COUNT(*) AS divvy_trip_rows FROM raw.divvy_trips;",
           "refId": "A"
         }
       ],
-      "title": "raw.station_status rows",
+      "title": "raw.divvy_trips rows",
       "type": "stat"
     },
     {
       "datasource": {
-        "type": "postgres",
+        "type": "grafana-postgresql-datasource",
         "uid": "chicago-analytics"
       },
       "description": "Total rows in mart.fact_station_reads. Should match raw count (minus null station_id/reported_at rows).",
@@ -298,22 +298,22 @@
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
+            "type": "grafana-postgresql-datasource",
             "uid": "chicago-analytics"
           },
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(*) AS fact_station_rows FROM mart.fact_station_reads;",
+          "rawSql": "SELECT COUNT(*) AS fact_station_day_rows FROM mart.fact_station_day;",
           "refId": "A"
         }
       ],
-      "title": "mart.fact_station_reads rows",
+      "title": "mart.fact_station_day rows",
       "type": "stat"
     },
     {
       "datasource": {
-        "type": "postgres",
+        "type": "grafana-postgresql-datasource",
         "uid": "chicago-analytics"
       },
       "description": "Rows ingested per hour into raw.station_status. A flat line at 0 means the stream is dead. Each poll adds ~1,128 rows.",
@@ -377,7 +377,10 @@
       "id": 5,
       "options": {
         "legend": {
-          "calcs": ["lastNotNull", "max"],
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -391,22 +394,22 @@
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
+            "type": "grafana-postgresql-datasource",
             "uid": "chicago-analytics"
           },
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT date_trunc('hour', ingest_timestamp) AS time, COUNT(*) AS rows_ingested FROM raw.station_status GROUP BY 1 ORDER BY 1;",
+          "rawSql": "SELECT date_trunc('hour', started_at) AS time, COUNT(*) AS trips_ingested FROM mart.fact_divvy_trips GROUP BY 1 ORDER BY 1 DESC LIMIT 168;",
           "refId": "A"
         }
       ],
-      "title": "Stream ingestion rate (rows/hour)",
+      "title": "Divvy trip rate (trips/hour, last 7 days)",
       "type": "timeseries"
     },
     {
       "datasource": {
-        "type": "postgres",
+        "type": "grafana-postgresql-datasource",
         "uid": "chicago-analytics"
       },
       "description": "Time since the most recent station_status row. If this exceeds a few minutes, the Kafka producer or Spark stream is down.",
@@ -463,25 +466,25 @@
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
+            "type": "grafana-postgresql-datasource",
             "uid": "chicago-analytics"
           },
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT EXTRACT(EPOCH FROM (NOW() - MAX(ingest_timestamp))) AS seconds_since_last_ingest FROM raw.station_status;",
+          "rawSql": "SELECT TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), MAX(started_at), SECOND) AS seconds_since_last_trip FROM mart.fact_divvy_trips;",
           "refId": "A"
         }
       ],
-      "title": "Stream freshness (seconds since last ingest)",
+      "title": "Latest trip freshness (seconds since last trip)",
       "type": "stat"
     },
     {
       "datasource": {
-        "type": "postgres",
+        "type": "grafana-postgresql-datasource",
         "uid": "chicago-analytics"
       },
-      "description": "Most recent Kafka message timestamp across all partitions. Tracks end-to-end pipeline latency from GBFS → Postgres.",
+      "description": "Most recent Kafka message timestamp across all partitions. Tracks end-to-end pipeline latency from GBFS \u2192 Postgres.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -527,17 +530,17 @@
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
+            "type": "grafana-postgresql-datasource",
             "uid": "chicago-analytics"
           },
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT MAX(kafka_timestamp) AS latest_kafka_msg FROM raw.station_status;",
+          "rawSql": "SELECT MAX(occurred_at) AS latest_crime_time FROM mart.fact_crime_events;",
           "refId": "A"
         }
       ],
-      "title": "Latest Kafka message timestamp",
+      "title": "Latest crime event timestamp",
       "type": "stat"
     },
     {
@@ -545,7 +548,7 @@
         "type": "postgres",
         "uid": "chicago-analytics"
       },
-      "description": "DBT test outcomes from the latest dbt build. Sourced from observability.dbt_test_results, written by the record_dbt_results Airflow task after every `dbt build` (Phase 3.2). passing = tests with status 'pass'; failing = status 'fail'; warnings = status 'warn'. If the panel shows no data, no dbt build has been recorded yet — trigger crime_batch or divvy_stream.",
+      "description": "DBT test outcomes from the latest dbt build. Sourced from observability.dbt_test_results, written by the record_dbt_results Airflow task after every `dbt build` (Phase 3.2). passing = tests with status 'pass'; failing = status 'fail'; warnings = status 'warn'. If the panel shows no data, no dbt build has been recorded yet \u2014 trigger crime_batch or divvy_stream.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -678,7 +681,7 @@
         "type": "postgres",
         "uid": "airflow-metadata"
       },
-      "description": "Failed Airflow tasks in the last 7 days (Phase 3.3). Airflow 3.0 removed the SLA feature (sla= parameter is a no-op), so this panel tracks task failures instead — which includes execution_timeout failures. A non-zero count means tasks are failing or timing out. Check the task instances table below for details.",
+      "description": "Failed Airflow tasks in the last 7 days (Phase 3.3). Airflow 3.0 removed the SLA feature (sla= parameter is a no-op), so this panel tracks task failures instead \u2014 which includes execution_timeout failures. A non-zero count means tasks are failing or timing out. Check the task instances table below for details.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -817,12 +820,18 @@
       },
       "id": 9,
       "options": {
-        "displayLabels": ["name", "percent"],
+        "displayLabels": [
+          "name",
+          "percent"
+        ],
         "legend": {
           "displayMode": "table",
           "placement": "right",
           "showLegend": true,
-          "values": ["value", "percent"]
+          "values": [
+            "value",
+            "percent"
+          ]
         },
         "pieType": "donut",
         "reduceOptions": {
@@ -943,7 +952,9 @@
         "footer": {
           "countRows": false,
           "fields": "",
-          "reducer": ["sum"],
+          "reducer": [
+            "sum"
+          ],
           "show": false
         },
         "showHeader": true,
@@ -974,7 +985,11 @@
   ],
   "refresh": "30s",
   "schemaVersion": 39,
-  "tags": ["phase-3", "pipeline-health", "observability"],
+  "tags": [
+    "phase-3",
+    "pipeline-health",
+    "observability"
+  ],
   "templating": {
     "list": []
   },
