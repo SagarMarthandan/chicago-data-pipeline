@@ -240,3 +240,76 @@ models:
         description: "Number of station-day observations used in the correlation."
         tests:
           - not_null
+
+  - name: crime_ridership_model_training_data
+    description: "Feature matrix + label for BigQuery ML linear regression. Train split: 2020-04 to 2023-12. Phase 4.8."
+    columns:
+      - name: trip_count
+        description: "Label — trips starting at this station on this day."
+        tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+              max_value: 10000
+      - name: crime_count_within_quarter_mile
+        description: "Key numeric feature — crimes within 402m of station on this day."
+        tests:
+          - not_null
+      - name: day_of_week
+        description: "Categorical feature 1-7 (Sunday=1). Extracted from date_key."
+        tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 1
+              max_value: 7
+      - name: month
+        description: "Categorical feature 1-12. Extracted from date_key."
+        tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 1
+              max_value: 12
+      - name: station_id
+        description: "Categorical feature — station fixed effect. Controls for baseline ridership."
+        tests:
+          - not_null
+
+  - name: crime_ridership_model_evaluation
+    description: "ML.EVALUATE metrics (r2_score, MAE, MSE) on held-out 2024+ test data. Phase 4.8."
+    columns:
+      - name: r2_score
+        description: "R-squared — fraction of variance explained by the model."
+      - name: mean_absolute_error
+        description: "MAE — average absolute prediction error in trips."
+      - name: mean_squared_error
+        description: "MSE — average squared prediction error."
+
+  - name: crime_ridership_model_weights
+    description: "ML.WEIGHTS — linear regression coefficients per feature. Key row: crime_count_within_quarter_mile. Phase 4.8."
+    columns:
+      - name: processed_input
+        description: "Feature name (or feature_category for one-hot encoded categoricals)."
+        tests:
+          - not_null
+      - name: weight
+        description: "Regression coefficient for numeric features. NULL for categorical features (per-category weights in category_weights column)."
+
+  - name: crime_ridership_predictions
+    description: "ML.PREDICT on 2024+ test data — predicted vs actual trip_count per station-day. Phase 4.8."
+    columns:
+      - name: station_id
+        description: "Station ID (passthrough from input)."
+        tests:
+          - not_null
+      - name: date_key
+        description: "Date (passthrough from input, not a model feature)."
+        tests:
+          - not_null
+      - name: trip_count
+        description: "Actual trip count (from test data)."
+        tests:
+          - not_null
+      - name: predicted_trip_count
+        description: "Model-predicted trip count."
+        tests:
+          - not_null

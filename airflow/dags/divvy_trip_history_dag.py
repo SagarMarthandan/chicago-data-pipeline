@@ -9,6 +9,8 @@ Tasks:
   2. dbt_build_divvy   — build Divvy-related DBT models (stg_divvy_trips,
                          dim_stations, fact_divvy_trips, fact_station_day,
                          crime_ridership_correlation) + updated dim_date
+                         + BQML models (Phase 4.8: training data, evaluation,
+                         weights, predictions)
   3. record_dbt_results — parse run_results.json → observability.dbt_test_results
 
 The dlt script (ingestion/load_divvy_trips.py) downloads monthly ZIPs from
@@ -82,10 +84,13 @@ with DAG(
     #    dataset and are built by the crime_batch DAG).
     #    Models built: stg_divvy_trips, dim_stations, fact_divvy_trips,
     #    dim_date (updated to span crime + Divvy), fact_station_day,
-    #    crime_ridership_correlation.
+    #    crime_ridership_correlation, + BQML models (Phase 4.8):
+    #    crime_ridership_model_training_data (trains BQML model via post_hook),
+    #    crime_ridership_model_evaluation, crime_ridership_model_weights,
+    #    crime_ridership_predictions.
     #
-    #    --select fact_station_day crime_ridership_correlation pulls in
-    #    all upstream dependencies (stg_divvy_trips, dim_stations,
+    #    --select fact_station_day crime_ridership_correlation + BQML models
+    #    pulls in all upstream dependencies (stg_divvy_trips, dim_stations,
     #    fact_divvy_trips, stg_crime_events, fact_crime_events, dim_date).
     dbt_build_divvy = BashOperator(
         task_id="dbt_build_divvy",
@@ -100,6 +105,8 @@ with DAG(
             f'{DBT_IMAGE} '
             f'dbt build --project-dir {DBT_DIR} --profiles-dir {DBT_PROFILES_DIR} '
             '--select fact_station_day crime_ridership_correlation '
+            'crime_ridership_model_training_data crime_ridership_model_evaluation '
+            'crime_ridership_model_weights crime_ridership_predictions '
             '--exclude stg_station_status fact_station_reads'
         ),
         execution_timeout=timedelta(minutes=45),

@@ -38,6 +38,9 @@ A running log of changes, errors, and fixes throughout the project. Use this to 
 - [2026-07-21 — Phase 4.2: Terraform (BigQuery + GCS provisioning)](#2026-07-21--phase-42-terraform-bigquery--gcs-provisioning)
 - [2026-07-21 — Phase 4.3: Architecture Change (Postgres → GCS/BigQuery)](#2026-07-21--phase-43-architecture-change-postgres--gcsbigquery)
 - [2026-07-22 — Phase 4.4: Divvy Trip History + Correlation Analysis](#2026-07-22--phase-44-divvy-trip-history--correlation-analysis)
+- [2026-07-22 — Phase 4.8: BigQuery ML (stretch goal)](#2026-07-22--phase-48-bigquery-ml-stretch-goal)
+- [2026-07-22 — Data Inventory Verification](#2026-07-22--data-inventory-verification)
+- [2026-07-22 — dbt docs generate + serve](#2026-07-22--dbt-docs-generate--serve)
 
 ---
 
@@ -912,3 +915,64 @@ No errors encountered. All 59 DBT tests passed on first run.
 - **dlt is a lightweight Airbyte alternative** — 1 Python file, no extra containers, native BigQuery support. Chosen over Airbyte (5-6 containers, 2-4GB RAM) for WSL2 resource constraints.
 - **Edit tool can accidentally remove lines** — when using SWAP on a WHERE clause, the FROM clause above can be lost if the range is mis-specified. Always read after editing to verify structural integrity.
 - **Correlation ≠ causation** — overall Pearson r = +0.20 (weak positive). Both crime and ridership are higher in busy areas. The confounding variable is urban activity level, not a causal relationship.
+
+
+## 2026-07-22 — Phase 4.8: BigQuery ML (stretch goal)
+
+### Changes
+- **BQML linear regression model:** Trained `mart.crime_ridership_model` (linear_reg) via dbt post_hook on `crime_ridership_model_training_data`. Features: crime_count_within_quarter_mile (numeric), day_of_week (categorical), month (categorical), station_id (categorical fixed effect). Label: trip_count.
+- **4 new DBT models:** `crime_ridership_model_training_data` (815K rows, 2020-2023 + post_hook), `crime_ridership_model_evaluation` (ML.EVALUATE on auto-split validation), `crime_ridership_model_weights` (ML.WEIGHTS — 5 rows), `crime_ridership_predictions` (ML.PREDICT on 648K 2024+ test rows).
+- **Airflow DAGs updated:** `divvy_trip_history_dag.py` `--select` now includes BQML models. `crime_batch_dag.py` `--exclude` now excludes them.
+- **Knowledge doc:** Created `docs/knowledge/bigquery-ml.md` — BQML syntax, dbt integration via post_hook, gotchas (categorical weight NULL, high-cardinality unseen categories, no_split + ML.EVALUATE).
+
+### Errors & Fixes
+
+| # | Error | Root Cause | Fix |
+|---|---|---|---|
+| 1 | `not_null` test failed on `crime_ridership_model_weights.weight` | BigQuery ML returns `weight = NULL` for categorical features — per-category weights are in `category_weights` JSON array, not `weight` column | Removed `not_null` test on `weight`; updated column description |
+| 2 | Out-of-sample R² = -173,642 (catastrophically negative) | `data_split_method='no_split'` + `ML.EVALUATE` on 2024+ data. 50% of test rows are unseen stations (opened after 2023) — station fixed effect has no learned weight, predictions default to intercept (~16,762) vs actual ~10-50 | Switched to `data_split_method='auto_split'` (default) — `ML.EVALUATE` uses in-sample validation. 2024+ predictions remain as out-of-sample test; the generalization gap is the learning outcome |
+
+### Lessons Summary
+- **`ML.WEIGHTS.weight` is NULL for categoricals** — BigQuery ML one-hot encodes categorical features; per-category coefficients are in `category_weights` (JSON). Don't test `not_null` on `weight`.
+- **High-cardinality categoricals break on unseen categories** — station_id (1,900+ values) as a fixed effect works in-sample (R²=0.43) but fails on new stations (R²=-199K). Predictions default to intercept for unseen categories. For production, use aggregate features (e.g. 30-day rolling average) instead of raw IDs.
+- **`data_split_method='no_split'` + `ML.EVALUATE` (no data) = error** — no held-out validation set. Use `auto_split` (default) for in-sample evaluation.
+- **BQML + dbt = post_hook pattern** — `CREATE MODEL` can't be a dbt materialization. Use a post_hook on the training-data model; downstream models `ref()` it to ensure the model is trained before evaluation/weights/predictions run.
+- **Regression confirms correlation** — crime coefficient = +1.45 (positive) even after controlling for station/day/month. Confirms Phase 4.4 finding: crime doesn't reduce ridership; both are higher in busy areas.
+
+
+## 2026-07-22 — Data Inventory Verification
+
+### Changes
+- Verified all BigQuery analytics tables by querying row counts + date ranges directly.
+- Verified Postgres tables — only `observability.dbt_test_results` present; streaming tables (`raw.station_status`, `raw.crime_events`) missing.
+- Corrected stale row counts in `current-state.md` (was showing 263K crime + 2.2K station_status from a previous session; those Postgres tables no longer exist).
+- Added "Current Data Inventory (verified 2026-07-22)" section to `docs/knowledge/data-sources.md` — full table-by-table breakdown of BigQuery + Postgres.
+- Added data inventory table to `chat-history/current-state.md`.
+
+### Findings
+- **BigQuery:** ALL analytics data present and current. Crime: 2.08M rows (2018-2026). Divvy: 34.8M rows (2020-2026). fact_station_day: 1.46M rows. BQML models: all 4 tables present.
+- **Postgres:** Only `observability.dbt_test_results` exists. Streaming tables not populated (DAG not run this session). This is expected — streaming is architecturally separate from analytics.
+- **Stale data in handoff:** `current-state.md` line 47 had row counts from a previous session (263K crime, 2.2K station_status) that no longer reflect reality. Corrected.
+
+### Lesson
+- **Handoff docs can go stale between sessions** — row counts and table existence noted at end of one session may not hold at the start of the next (containers rebuilt, volumes cleared, DAGs not re-run). Always verify data presence by querying directly, not by trusting the handoff doc.
+
+
+## 2026-07-22 — dbt docs generate + serve
+
+### Changes
+- Ran `dbt docs generate` against BigQuery — produced `catalog.json` with 15 models, 4 sources, 89 tests, 1 seed, 871 macros.
+- Started `dbt docs serve` in Docker container on port 8090 (8080 conflicts with Airflow). Interactive HTML docs accessible at http://localhost:8090.
+- Updated `docs/knowledge/dbt.md` with "dbt docs" section (commands, port, BigQuery gotcha).
+- Updated `chat-history/current-state.md` URLs section with dbt docs URL.
+
+### Errors & Fixes
+
+| # | Error | Root Cause | Fix |
+|---|---|---|---|
+| 1 | `RuntimeWarning: "table_owner" does not match the name of any column` | BigQuery doesn't have table owners like Postgres — dbt's catalog builder expects this column | Harmless warning. Catalog is still built correctly. No fix needed. |
+
+### Lessons Summary
+- **dbt docs port conflict** — `dbt docs serve` defaults to port 8080, which conflicts with Airflow webserver. Use `--port 8090` (or any free port).
+- **`--host 0.0.0.0` required in Docker** — without it, dbt docs serve binds to localhost inside the container and is unreachable from the host.
+- **`dbt docs generate` needs warehouse access** — it introspects the warehouse (INFORMATION_SCHEMA) to build catalog.json. Unlike `dbt compile`, it can't run offline.

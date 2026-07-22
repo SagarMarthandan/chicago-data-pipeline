@@ -73,7 +73,8 @@ with DAG(
     #    dim_crime_type, dim_date (upstream deps).
     #    --exclude stg_station_status fact_station_reads (streaming models, stay on Postgres).
     #    --exclude stg_divvy_trips dim_stations fact_divvy_trips fact_station_day
-    #    crime_ridership_correlation (Divvy models, built by divvy_trip_history DAG).
+    #    crime_ridership_correlation + BQML models (Divvy models, built by
+    #    divvy_trip_history DAG).
     #
     #    Note: dim_date depends on both stg_crime_events AND stg_divvy_trips.
     #    If divvy_trip_history hasn't run yet, dim_date will fail (stg_divvy_trips
@@ -93,7 +94,9 @@ with DAG(
             '--select fact_crime_events '
             '--exclude stg_station_status fact_station_reads '
             'stg_divvy_trips dim_stations fact_divvy_trips '
-            'fact_station_day crime_ridership_correlation'
+            'fact_station_day crime_ridership_correlation '
+            'crime_ridership_model_training_data crime_ridership_model_evaluation '
+            'crime_ridership_model_weights crime_ridership_predictions'
         ),
         execution_timeout=timedelta(minutes=30),
     )

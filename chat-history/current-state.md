@@ -1,6 +1,6 @@
 # Current State — Handoff Document
 
-> **Read this first in a new session.** This file is the handoff: current state, active decisions, and next steps. Last updated: 2026-07-22 (Phase 4.4 COMPLETE — driving question answered, correlation coefficient produced).
+> **Read this first in a new session.** This file is the handoff: current state, active decisions, and next steps. Last updated: 2026-07-22 (Phase 4.8 COMPLETE — BQML stretch goal done, regression model trained).
 
 ---
 
@@ -10,7 +10,7 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 
 - **Repo:** `~/chicago-data-pipeline/` (WSL, Ubuntu on Windows 10)
 - **Git:** initialized on `main`, no commits yet (user commits manually)
-- **Phase:** 1 COMPLETE. Phase 2 COMPLETE (2.1–2.6). Phase 3 COMPLETE (3.1–3.4). Phase 4 COMPLETE: 4.1 GCP setup ✅, 4.2 Terraform ✅, 4.3 Architecture change ✅, 4.4 Divvy trip history + correlation analysis ✅. **The driving question is answered.** Phase 5 NEXT (CI/CD).
+- **Phase:** 1 COMPLETE. Phase 2 COMPLETE (2.1–2.6). Phase 3 COMPLETE (3.1–3.4). Phase 4 COMPLETE: 4.1 GCP setup ✅, 4.2 Terraform ✅, 4.3 Architecture change ✅, 4.4 Divvy trip history + correlation analysis ✅, 4.8 BigQuery ML (stretch) ✅. **The driving question is answered.** Phase 5 NEXT (CI/CD).
 - **AI mode:** AI-writes-code (user said "you write it" — explicit mode switch from Socratic)
 
 ## Tech Stack
@@ -44,7 +44,36 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 | dbt-build | `python:3.11-slim` + dbt | build-only (never runs, exists for `docker compose build`) |
 | grafana | `grafana/grafana:12.4.0` | **healthy** — UI on port 3000 (admin/admin), 2 datasources (chicago-analytics + airflow-metadata), 2 dashboards (Pipeline Health + Crime + Divvy Analysis) |
 
-**Note:** At end of session, all services running. `raw.crime_events` has 263,402 rows. `raw.station_status` has 2,253 rows (from divvy_stream DAG run). `mart.fact_station_reads` has 2,253 rows, 1,125 unique stations. `mart.fact_crime_events` has 263,402 rows. `observability.dbt_test_results` has 52 tests (all pass, latest invocation). Start all services with `docker compose up -d`.
+**Note:** At end of session, all services running. Postgres has only `observability.dbt_test_results` (streaming tables not populated — see data inventory below). BigQuery has all analytics data (crime 2.08M rows, Divvy 34.8M rows, fact_station_day 1.46M rows). Start all services with `docker compose up -d`.
+
+### Data Inventory (verified 2026-07-22)
+
+**BigQuery — Analytics Pipeline (ALL PRESENT ✅)**
+
+| Table | Years | Rows | Notes |
+|---|---|---|---|
+| `staging.stg_crime_events` | 2018–2026 | 2,073,670 | From `bigquery-public-data.chicago_crime` (filtered `year >= 2018`) |
+| `mart.fact_crime_events` | 2018–2026 | 2,073,670 | Partitioned by date_key, clustered by community_area + primary_type |
+| `raw.divvy_trips` | 2020–2026 | 34,751,413 | dlt from S3 (75 monthly ZIPs, 2020-04 to 2026-06) |
+| `mart.fact_divvy_trips` | 2020–2026 | 34,751,412 | Partitioned by started_at, clustered by start_station_id |
+| `mart.fact_station_day` | 2020–2026 | 1,463,049 | THE analytics mart — geospatial join (ST_DISTANCE ≤ 402m) |
+| `mart.crime_ridership_correlation` | — | ~3,200 | CORR() at overall/per-station/per-month scope |
+| `mart.crime_ridership_model_training_data` | 2020–2023 | 815,472 | BQML training set + post_hook trains the model |
+| `mart.crime_ridership_model_evaluation` | — | 1 | ML.EVALUATE (R²=0.434, MAE=13.4) |
+| `mart.crime_ridership_model_weights` | — | 5 | ML.WEIGHTS (crime coefficient = +1.45) |
+| `mart.crime_ridership_predictions` | 2024–2026 | 647,577 | ML.PREDICT on out-of-sample test data |
+
+**Postgres — Streaming + Observability (PARTIAL ⚠️)**
+
+| Table | Status | Notes |
+|---|---|---|
+| `observability.dbt_test_results` | ✅ Present | Test results from latest dbt build |
+| `raw.station_status` | ❌ Missing | Phase 2 streaming table. Run `divvy_stream` DAG to repopulate. Not a dependency of BigQuery analytics. |
+| `raw.crime_events` | ❌ Missing | Phase 1 Socrata extract. Analytics marts use BigQuery public dataset instead. Socrata pipeline exists as code fallback. |
+
+**Analytics overlap window:** 2020-04 to 2026-06 (6+ years, 1.46M station-day observations). BQML trains on 2020-2023, tests on 2024-2026.
+
+**See `docs/knowledge/data-sources.md` → "Current Data Inventory" for full details.**
 
 ### URLs
 - **Airflow UI:** http://localhost:8080 (admin / admin)
@@ -54,6 +83,7 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 - **Kafka (host):** localhost:29092
 - **Kafka (Docker network):** kafka:9092
 - **Grafana UI:** http://localhost:3000 (admin / admin) — anonymous Viewer access enabled
+- **dbt docs:** http://localhost:8090 — auto-generated model documentation (15 models, 89 tests, 4 sources). Run via `docker run -p 8090:8090 ... dbt docs serve`. Port 8090 (8080 conflicts with Airflow).
 
 ### Key Architecture Decisions (Phase 1 + Phase 2 + Phase 3)
 - **3 Postgres schemas:** `raw`, `staging`, `mart` (no `intermediate`)
@@ -258,6 +288,15 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
 - **7 errors hit:** stale Airflow image, coordinate test failures (Missouri + Montreal rows), missing `primary_type` in SELECT for cluster_by, missing FROM clause (edit accident), column name mismatch in correlation CTE, stale dim_date/dim_crime_type. See changelog for details.
 - See `docs/phases/phase-4.4-divvy-trip-history.md` for full details.
 
+### Phase 4.8 — BigQuery ML (stretch goal, COMPLETE)
+- **BQML linear regression:** Trained `mart.crime_ridership_model` (linear_reg) via dbt post_hook. Features: crime_count_within_quarter_mile, day_of_week, month, station_id (fixed effect). Label: trip_count.
+- **4 new DBT models:** `crime_ridership_model_training_data` (815K rows, 2020-2023 + post_hook), `crime_ridership_model_evaluation` (ML.EVALUATE, R²=0.434), `crime_ridership_model_weights` (ML.WEIGHTS, crime coefficient +1.45), `crime_ridership_predictions` (ML.PREDICT, 648K rows 2024+).
+- **Airflow DAGs updated:** `divvy_trip_history_dag.py` `--select` includes BQML models; `crime_batch_dag.py` `--exclude` excludes them.
+- **DBT build:** 17/17 tests pass (BQML models only).
+- **Key finding:** Crime coefficient = +1.45 (positive) even after controlling for station/day/month. Confirms Phase 4.4 correlation: crime doesn't reduce ridership. In-sample R²=0.434; seen-station out-of-sample R²=0.447; full out-of-sample R²=-199K (50% unseen stations — high-cardinality fixed effect breaks on new stations).
+- **2 errors hit:** not_null test on `weight` (NULL for categoricals), catastrophically negative out-of-sample R² (no_split + unseen stations). See changelog for details.
+- See `docs/phases/phase-4.8-bigquery-ml.md` for full details.
+
 ## Files Created (full repo structure)
 
 ```
@@ -345,7 +384,7 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
    - **Future task (after Phase 5):** Generate 50–100 interview questions covering the full pipeline — architecture decisions, error debugging, tool tradeoffs, production readiness. User must be able to answer all from memory.
    - **Future task (after Phase 5):** Comprehensive documentation restructuring — reorganize all docs for portfolio readability, consolidate redundant content, ensure consistent formatting across changelog/operations/phases/knowledge. Discuss approach when we get there.
 
-- **Phase gates:** Phase 1 COMPLETE. Phase 2 COMPLETE (2.1–2.6). Phase 3 COMPLETE (3.1–3.4). Phase 4 COMPLETE (4.1–4.4 — driving question answered). Phase 5 NEXT (CI/CD). Do NOT skip ahead.
+- **Phase gates:** Phase 1 COMPLETE. Phase 2 COMPLETE (2.1–2.6). Phase 3 COMPLETE (3.1–3.4). Phase 4 COMPLETE (4.1–4.4 + stretch 4.8 BQML — driving question answered). Phase 5 NEXT (CI/CD). Do NOT skip ahead.
 - **Learning protocol:** Socratic by default. User must say "write the code" to get code. Currently in AI-writes-code mode.
 - **Three-doc system:** `changelog.md` (errors), `docs/knowledge/` (reference, one file per topic), `docs/operations-performed.md` (audit trail). Update all three after every change.
 - **Phase-completion docs:** After each sub-phase is verified, create `docs/phases/phase-X.Y-<name>.md` from `TEMPLATE.md`. Include one high-level mermaid diagram + pointer to `docs/knowledge/architecture.md` for details.
@@ -423,7 +462,7 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
 **Goal:** Set up GitHub Actions CI/CD — branch protection, PR checks (ruff + dbt parse + compose validate), versioned releases, image push to GHCR. See `chicago-pipeline-plan.md` sections 5.1–5.6.
 
 ### Before starting Phase 5
-1. **Commit current work** — Phase 4.4 + all doc updates. User commits manually.
+1. **Commit current work** — Phase 4.4 + 4.8 (BQML) + all doc updates (README, dlt knowledge doc, bigquery-ml knowledge doc, phase-4.8 doc). User commits manually.
 2. **Read `chicago-pipeline-plan.md` sections 5.1–5.6** — CI/CD plan.
 3. **Prerequisites to confirm:**
    - GitHub repo created and code pushed
@@ -436,6 +475,6 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
 - 67/67 DBT tests pass, partition pruning verified (97.8% bytes saved)
 - Grafana scatter plot + correlation gauge live
 
-### Stretch goals (not in plan, optional)
-- BigQuery ML: `CREATE MODEL mart.crime_ridership_model OPTIONS(model_type='linear_reg')` — predict ridership from crime count + temporal features
+### Stretch goals
+- ~~BigQuery ML: `CREATE MODEL mart.crime_ridership_model OPTIONS(model_type='linear_reg')` — predict ridership from crime count + temporal features~~ **DONE (Phase 4.8)** — crime coefficient +1.45, in-sample R²=0.434, confirms positive crime-ridership relationship
 - Control for confounding variables (population density, day of week, seasonality) in correlation analysis

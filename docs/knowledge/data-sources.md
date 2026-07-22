@@ -178,3 +178,51 @@
 - No Divvy dataset in the public catalog
 
 ---
+
+## Current Data Inventory (verified 2026-07-22)
+
+End-to-end verification of what's actually loaded in BigQuery + Postgres. Checked by querying each table directly.
+
+### BigQuery — Analytics Pipeline (ALL PRESENT ✅)
+
+| Table | Dataset | Min Year | Max Year | Row Count | Source |
+|---|---|---|---|---|---|
+| `stg_crime_events` | staging | 2018 | 2026 | 2,073,670 | `bigquery-public-data.chicago_crime.crime` (filtered `year >= 2018`) |
+| `fact_crime_events` | mart | 2018 | 2026 | 2,073,670 | From staging |
+| `raw.divvy_trips` | raw | 2020 | 2026 | 34,751,413 | dlt from S3 (75 monthly ZIPs, 2020-04 to 2026-06) |
+| `fact_divvy_trips` | mart | 2020 | 2026 | 34,751,412 | From staging (1 row dropped — null ride_id) |
+| `fact_station_day` | mart | 2020 | 2026 | 1,463,049 | Geospatial join of crime + Divvy |
+| `crime_ridership_correlation` | mart | — | — | ~3,200 | CORR() at 3 scopes |
+| `crime_ridership_model_training_data` | mart | 2020 | 2023 | 815,472 | BQML training set (pre-2024) |
+| `crime_ridership_model_evaluation` | mart | — | — | 1 | ML.EVALUATE metrics |
+| `crime_ridership_model_weights` | mart | — | — | 5 | ML.WEIGHTS coefficients |
+| `crime_ridership_predictions` | mart | 2024 | 2026 | 647,577 | ML.PREDICT on 2024+ test data |
+
+### Postgres — Streaming + Observability (PARTIAL ⚠️)
+
+| Table | Schema | Status | Notes |
+|---|---|---|---|
+| `dbt_test_results` | observability | ✅ Present | 52+ test results from latest dbt build |
+| `station_status` | raw | ❌ Missing | Phase 2 streaming table. Not populated — `divvy_stream` DAG not run in this session. Run the DAG to repopulate. |
+| `crime_events` | raw | ❌ Missing | Phase 1 Socrata extract table. Not created — schema was never initialized in Postgres (init.sql only creates `raw` schema, not tables). The Socrata pipeline still exists as code but the analytics marts use BigQuery public data instead. |
+| `staging.*` views | staging | ❌ Missing | DBT staging views for streaming models (`stg_station_status`, `fact_station_reads`) not built — they depend on `raw.station_status` which doesn't exist. |
+
+**Why Postgres streaming tables are empty:** The streaming path (Phase 2) is a separate pipeline from the analytics path (Phase 4). The analytics marts (`fact_station_day`, `crime_ridership_correlation`, BQML models) live entirely in BigQuery and don't depend on Postgres streaming data. The streaming tables would only be populated by running the `divvy_stream` DAG, which polls live GBFS data → Kafka → Spark Streaming → Postgres. This is a demo of streaming architecture, not a dependency of the analytics pipeline.
+
+### Data Coverage Summary
+
+| Data Source | Full Range | Used Range | Why |
+|---|---|---|---|
+| Crime (public dataset) | 2001–present (~8.6M rows) | 2018–present (2.08M rows) | Filtered to `year >= 2018` in `stg_crime_events` for Divvy overlap context. Divvy S3 data starts 2020-04; 2018-2019 included for crime trend context. |
+| Divvy trips (S3) | 2020-04 to 2026-06 (34.8M rows) | 2020-04 to 2026-06 (all loaded) | Full history ingested via dlt in append mode. No filtering — all 75 monthly files loaded. |
+| Divvy GBFS (live stream) | Real-time (60s polls) | Not currently populated | Streaming demo pipeline. Run `divvy_stream` DAG to populate `raw.station_status` in Postgres. |
+
+### Analytics Overlap Window
+
+The driving question (crime vs ridership) is answerable for **2020-04 to 2026-06** — the period where both crime data and Divvy trip data overlap. This is 6+ years of data, 1.46M station-day observations. The BQML model trains on 2020-2023 (815K rows) and tests on 2024-2026 (648K rows).
+
+### What's NOT Loaded (and why that's OK)
+
+- **Crime 2001-2017:** Available in `bigquery-public-data.chicago_crime` but filtered out. No Divvy data before 2020, so pre-2018 crime has no ridership to correlate with. Including it would add noise without analytical value.
+- **Divvy GBFS live stream:** Not populated in Postgres. The streaming pipeline (Phase 2) is architecturally separate from the analytics pipeline (Phase 4). The analytics marts use historical trip data from S3, not real-time station status polls.
+- **Taxi trips (`bigquery-public-data.chicago_taxi_trips`):** Available but not used. Alternative mobility data — could be a future stretch goal for cross-modal analysis.
