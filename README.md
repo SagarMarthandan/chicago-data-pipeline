@@ -125,6 +125,12 @@ graph LR
 
 ![DBT Docs Lineage](docs/images/dbt-docs-lineage.png)
 
+### Grafana — Observability Dashboards
+
+![Grafana Pipeline Health](docs/images/grafana-pipeline-health.png)
+
+![Grafana Crime + Divvy Analysis](docs/images/grafana-crime-divvy.png)
+
 ### BigQuery — Analytics + BQML
 
 ![BigQuery Datasets](docs/images/bigquery-datasets.png)
@@ -191,7 +197,7 @@ chicago-data-pipeline/
 │       └── divvy_producer.py # polls GBFS every 60s, publishes to Kafka topic
 ├── grafana/                  # observability dashboards
 │   ├── provisioning/
-│   │   ├── datasources/      # 2 Postgres + 1 BigQuery datasource
+│   │   ├── datasources/      # 2 Postgres datasources (analytics + airflow metadata)
 │   │   └── dashboards/       # dashboard provider config
 │   └── dashboards/
 │       ├── pipeline_health.json      # 11-panel pipeline health dashboard

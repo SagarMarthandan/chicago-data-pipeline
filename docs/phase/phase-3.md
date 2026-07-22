@@ -498,6 +498,13 @@ graph TB
 - **DBT test history panel** — the current DBT panel shows only the latest invocation. A historical view (test outcomes over time, trend of pass/fail counts) would be valuable for spotting data quality regressions. The data already exists in `observability.dbt_test_results`.
 - **Recorder for model freshness** — the recorder currently captures test outcomes only. Extending it to capture model build times, row counts, and freshness would give a fuller observability picture in Grafana.
 
+
+## Screenshots
+
+__omp_shell("[Grafana Pipeline Health](docs/images/grafana-pipeline-health.png)")
+
+__omp_shell("[Grafana Crime + Divvy Analysis](docs/images/grafana-crime-divvy.png)")
+
 ---
 
 **← Previous:** [Phase 2 — Live Stream](phase-2.md) | **Next:** [Phase 4 — Cloud Migration](phase-4.md)
