@@ -2,11 +2,14 @@
 # Grafana datasource provisioning — BigQuery (Phase 4.4)
 # ============================================================
 # Auto-creates the BigQuery datasource on Grafana startup.
-# Used by the crime-ridership analysis dashboard panels that query
-# BigQuery marts (fact_station_day, crime_ridership_correlation).
+# Used by dashboard panels that query BigQuery marts.
 #
-# Auth: service account key file mounted at /opt/grafana/gcp-credentials.json
-# (read-only mount from docker-compose.yml).
+# Auth: JWT (service account). The plugin expects three fields:
+#   jsonData.clientEmail  — service account client_email
+#   jsonData.tokenUri     — service account token_uri
+#   secureJsonData.privateKey — PEM private key (NOT the whole JSON file)
+#
+# The "gce" auth type only works on actual GCP VMs (metadata server).
 #
 # The uid "bigquery-analytics" is what dashboard panels reference
 # via the "datasource.uid" field in their JSON.
@@ -20,14 +23,42 @@ datasources:
     type: grafana-bigquery-datasource
     access: proxy
     jsonData:
-      authenticationType: gce
-      # GCP project ID — interpolated from env var
-      project: ${GCP_PROJECT_ID}
-      # Default dataset for queries
+      authenticationType: jwt
+      project: chicago-divvy-pipeline
       defaultDataset: mart
-      # Location matches our BigQuery datasets
       location: US
-      # Service account key file path (mounted in container)
-      privateKeyPath: /opt/grafana/gcp-credentials.json
+      clientEmail: terraform-runner@chicago-divvy-pipeline.iam.gserviceaccount.com
+      tokenUri: https://oauth2.googleapis.com/token
+    secureJsonData:
+      privateKey: |
+        -----BEGIN PRIVATE KEY-----
+        MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQCmormyfAUfqodp
+        /6Fatehc3ej5I9JIiBKQ/MrES3Fb2DSRHoMtkVP9huH+3i3JUqc5bM12sZET+mjE
+        YKDhXg2n/ByY4mqBhp/0HsqfOJUj0K3ecUebyvoDW8+1nlO6jVoXLKAmhGqnwdYz
+        YfHLpBMzrkXE/IE/sYh7V/SvVfDs6exIlsqS9kYwBubm8aJPWpJbaaol5tuNTo5u
+        j3LzoFdBH4aXd55gqLRDyoTEASTWoFMi5thINUFhXqiJYN867PvgvbeKsEaZ4KNm
+        Cho8g5iewtYFHLrqkrzPwRW3sWz4D6xJW+GzepFleVvUyv4L4WY7obfDpdyOyKKX
+        xcO+kRNpAgMBAAECggEAM0fjvu5Uw1R+/NtrBBf0LNQr9LQV7DVYBV+OZQ9UkO+9
+        6aUKuJS/VMfUN9OXIpw5kz4NEwh9Pbkz0a9tAz4nFLnM8S3Imhjck8uADrTijNWV
+        FF4nK+Ywv6TbDKjvWntSrMwScxgQHJVV/pUXTNSvBhoNJZyRiBDyEAdW6TiY/sdV
+        TIw9X4Adm9afHZ/DDjEuDmMO1LMl/sK3GOW+YRuZf74YM8Ch/eL1Fd6KFhHSLRdf
+        9j04r58GP1vn/507luGBWzqkfqMq/JdI2mkxce6oA/m8Y7Dw6t4Kfsh4YzBJcjxC
+        94AEE4dwI0hp+XZI/r5B4ChiNw8R0FMxiDt5S+/JywKBgQDO4z4Y6CY1Piu6bJHP
+        jKNcsaVH89j/e/lutCTkB/70IGwLCc8CW2zqdt3S3R567Vc3N3Qgrug5UuXqirg8
+        m46rciVAos7GuXHF2cQEv7eN2zHhfKR8EnAIfXj42YkjlbGrjmWthaHRkORnhi2u
+        FrxwrfcfEXBgDk2Mz7TdubUvxwKBgQDOMVRuHjl8rX0Hpv+RzFCiQ55Gt9baDpgw
+        hQmfzDjByCpy9KvX1HRrMei0Gk5hWJ2jSI5Et0d8fDBCn9HQt0frrYi8JJO3AXab
+        4L7Y+MM1VbRgfQ3wkZALTYdQ0YgrF4uZoKsUN6bh7XDIPQTEhiJOCayfZHd3a23k
+        eEvgXygDTwKBgQCiVE8+/7grApMQ/WsTLMhpTMHgyQY0wDOglxxzB4sWRfJAXvvc
+        X5wABDBc6T6nOV67Znlpw5NWlyLretjARVYWU8PDCXuxFYSdtxZEm6EMXzauNDxj
+        VZwuLTUkHJusHiJ/94T0N+wWINf2GqPw+sn0p6tE50wDMnXKzJafer0dtQKBgQDL
+        x5EL668g+0zwPSmj7GtckrtgZNxgUcAzY6gpV+pYCf158znKatxL/N1g8ga4yp2w
+        /Eouu3xZGVuQ3Oa+AgWAdNcIKpYabcXNNIcpZGF42qUUH0OhmBrmMM8lHpAXFoQP
+        ZuztZDr4WnP2UefeWjqZKZKDTQWM7o2DGSjULPccnQKBgQC8+OZz44d1tULo9cOz
+        HH+5/d81PBafUsiCTHvZo2cgWuMCjGhpzsTDlKmAUzJpfDdTUlOJrGvdj4pymeci
+        kIhXYhC2dcEUnCiQMbh+VQoXOFCw7c3Go2lu3/rWC2fDRJn7SEQl2CI2TF5FZ58G
+        lNdj7oBWtk6IIM6f2MLTehi5vw==
+        -----END PRIVATE KEY-----
+        
     isDefault: false
     editable: true

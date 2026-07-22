@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Phase 3.1 + 4.4 — Crime + Divvy analysis: crime by community area, crime type breakdown, station availability, crime heatmap, and the driving question (crime vs ridership correlation via BigQuery geospatial join).",
+  "description": "Phase 3.1 + 4.4 \u2014 Crime + Divvy analysis: crime by community area, crime type breakdown, station availability, crime heatmap, and the driving question (crime vs ridership correlation via BigQuery geospatial join).",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
@@ -25,8 +25,8 @@
   "panels": [
     {
       "datasource": {
-        "type": "postgres",
-        "uid": "chicago-analytics"
+        "type": "grafana-bigquery-datasource",
+        "uid": "bigquery-analytics"
       },
       "description": "Crime count by community area, joined to dim_community_area for names. Top 15 by count. Answers: where does crime concentrate?",
       "fieldConfig": {
@@ -102,8 +102,8 @@
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
-            "uid": "chicago-analytics"
+            "type": "grafana-bigquery-datasource",
+            "uid": "bigquery-analytics"
           },
           "editorMode": "code",
           "format": "table",
@@ -117,8 +117,8 @@
     },
     {
       "datasource": {
-        "type": "postgres",
-        "uid": "chicago-analytics"
+        "type": "grafana-bigquery-datasource",
+        "uid": "bigquery-analytics"
       },
       "description": "Crime count by primary_type. Shows the distribution of crime categories across the dataset.",
       "fieldConfig": {
@@ -145,12 +145,18 @@
       },
       "id": 2,
       "options": {
-        "displayLabels": ["name", "percent"],
+        "displayLabels": [
+          "name",
+          "percent"
+        ],
         "legend": {
           "displayMode": "table",
           "placement": "right",
           "showLegend": true,
-          "values": ["value", "percent"]
+          "values": [
+            "value",
+            "percent"
+          ]
         },
         "pieType": "pie",
         "reduceOptions": {
@@ -169,13 +175,13 @@
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
-            "uid": "chicago-analytics"
+            "type": "grafana-bigquery-datasource",
+            "uid": "bigquery-analytics"
           },
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT SPLIT_PART(crime_type_key, '|', 1) AS primary_type, COUNT(*) AS crime_count FROM mart.fact_crime_events GROUP BY 1 ORDER BY crime_count DESC LIMIT 10;",
+          "rawSql": "SELECT SPLIT(crime_type_key, '|')[OFFSET(0)] AS primary_type, COUNT(*) AS crime_count FROM mart.fact_crime_events GROUP BY 1 ORDER BY crime_count DESC LIMIT 10;",
           "refId": "A"
         }
       ],
@@ -184,8 +190,8 @@
     },
     {
       "datasource": {
-        "type": "postgres",
-        "uid": "chicago-analytics"
+        "type": "grafana-bigquery-datasource",
+        "uid": "bigquery-analytics"
       },
       "description": "Average bikes available per station over time. Each point is the average across all stations in a given hour. Trends show system-wide availability changes.",
       "fieldConfig": {
@@ -248,7 +254,10 @@
       "id": 3,
       "options": {
         "legend": {
-          "calcs": ["lastNotNull", "mean"],
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -262,25 +271,25 @@
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
-            "uid": "chicago-analytics"
+            "type": "grafana-bigquery-datasource",
+            "uid": "bigquery-analytics"
           },
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT date_trunc('hour', reported_at) AS time, AVG(num_bikes_available) AS avg_bikes, AVG(num_ebikes_available) AS avg_ebikes, AVG(total_vehicles_available) AS avg_total_vehicles FROM mart.fact_station_reads GROUP BY 1 ORDER BY 1;",
+          "rawSql": "SELECT EXTRACT(HOUR FROM started_at) AS hour_of_day, COUNT(*) AS trip_count FROM mart.fact_divvy_trips GROUP BY 1 ORDER BY 1;",
           "refId": "A"
         }
       ],
-      "title": "Avg vehicles available per station (hourly)",
+      "title": "Trips per hour of day",
       "type": "timeseries"
     },
     {
       "datasource": {
-        "type": "postgres",
-        "uid": "chicago-analytics"
+        "type": "grafana-bigquery-datasource",
+        "uid": "bigquery-analytics"
       },
-      "description": "Station availability heatmap: station (y) × hour (x), color = avg bikes available. Shows which stations are full/empty at which times. Limited to top 20 busiest stations for readability.",
+      "description": "Station availability heatmap: station (y) \u00d7 hour (x), color = avg bikes available. Shows which stations are full/empty at which times. Limited to top 20 busiest stations for readability.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -344,25 +353,25 @@
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
-            "uid": "chicago-analytics"
+            "type": "grafana-bigquery-datasource",
+            "uid": "bigquery-analytics"
           },
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH busy_stations AS (SELECT station_id FROM mart.fact_station_reads GROUP BY station_id ORDER BY COUNT(*) DESC LIMIT 20) SELECT EXTRACT(HOUR FROM reported_at)::int AS hour_of_day, station_id, AVG(num_bikes_available) AS avg_bikes FROM mart.fact_station_reads WHERE station_id IN (SELECT station_id FROM busy_stations) GROUP BY hour_of_day, station_id ORDER BY station_id, hour_of_day;",
+          "rawSql": "WITH busy_stations AS (SELECT start_station_id AS station_id FROM mart.fact_divvy_trips GROUP BY start_station_id ORDER BY COUNT(*) DESC LIMIT 20) SELECT EXTRACT(HOUR FROM started_at) AS hour_of_day, start_station_id AS station_id, COUNT(*) AS trip_count FROM mart.fact_divvy_trips WHERE start_station_id IN (SELECT station_id FROM busy_stations) GROUP BY hour_of_day, station_id ORDER BY station_id, hour_of_day;",
           "refId": "A"
         }
       ],
-      "title": "Station availability heatmap (top 20 stations × hour)",
+      "title": "Trip count heatmap (top 20 stations \u00d7 hour)",
       "type": "heatmap"
     },
     {
       "datasource": {
-        "type": "postgres",
-        "uid": "chicago-analytics"
+        "type": "grafana-bigquery-datasource",
+        "uid": "bigquery-analytics"
       },
-      "description": "THE DRIVING QUESTION: For each community area, monthly crime count vs avg Divvy bikes available. Since Divvy station reads lack community_area_id (GBFS doesn't include it), this is a proxy — total bikes available system-wide per month, alongside monthly crime counts. A real join requires geospatial matching (Phase 4+).",
+      "description": "THE DRIVING QUESTION: For each community area, monthly crime count vs avg Divvy bikes available. Since Divvy station reads lack community_area_id (GBFS doesn't include it), this is a proxy \u2014 total bikes available system-wide per month, alongside monthly crime counts. A real join requires geospatial matching (Phase 4+).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -456,7 +465,10 @@
       "id": 5,
       "options": {
         "legend": {
-          "calcs": ["lastNotNull", "mean"],
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -470,25 +482,25 @@
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
-            "uid": "chicago-analytics"
+            "type": "grafana-bigquery-datasource",
+            "uid": "bigquery-analytics"
           },
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "WITH crime_monthly AS (SELECT date_trunc('month', occurred_at) AS time, COUNT(*) AS monthly_crime_count FROM mart.fact_crime_events GROUP BY 1), bikes_monthly AS (SELECT date_trunc('month', reported_at) AS time, AVG(num_bikes_available) AS avg_bikes_available FROM mart.fact_station_reads GROUP BY 1) SELECT c.time, c.monthly_crime_count, COALESCE(b.avg_bikes_available, 0) AS avg_bikes_available FROM crime_monthly c LEFT JOIN bikes_monthly b ON c.time = b.time ORDER BY c.time;",
+          "rawSql": "WITH crime_monthly AS (SELECT date_trunc(occurred_at, MONTH) AS time, COUNT(*) AS monthly_crime_count FROM mart.fact_crime_events GROUP BY 1), trips_monthly AS (SELECT date_trunc(started_at, MONTH) AS time, COUNT(*) AS monthly_trip_count FROM mart.fact_divvy_trips GROUP BY 1) SELECT c.time, c.monthly_crime_count, COALESCE(t.monthly_trip_count, 0) AS monthly_trip_count FROM crime_monthly c LEFT JOIN trips_monthly t ON c.time = t.time ORDER BY c.time;",
           "refId": "A"
         }
       ],
-      "title": "Crime vs Divvy ridership proxy (monthly)",
+      "title": "Crime vs Divvy trips (monthly)",
       "type": "timeseries"
     },
     {
       "datasource": {
-        "type": "postgres",
-        "uid": "chicago-analytics"
+        "type": "grafana-bigquery-datasource",
+        "uid": "bigquery-analytics"
       },
-      "description": "Crime count by day of week × hour of day. Reveals temporal crime patterns — when crime peaks during the week.",
+      "description": "Crime count by day of week \u00d7 hour of day. Reveals temporal crime patterns \u2014 when crime peaks during the week.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -552,17 +564,17 @@
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
-            "uid": "chicago-analytics"
+            "type": "grafana-bigquery-datasource",
+            "uid": "bigquery-analytics"
           },
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT EXTRACT(HOUR FROM occurred_at)::int AS hour_of_day, EXTRACT(DOW FROM occurred_at)::int AS day_of_week, COUNT(*) AS crime_count FROM mart.fact_crime_events GROUP BY hour_of_day, day_of_week ORDER BY day_of_week, hour_of_day;",
+          "rawSql": "SELECT EXTRACT(HOUR FROM occurred_at) AS hour_of_day, EXTRACT(DAYOFWEEK FROM occurred_at) AS day_of_week, COUNT(*) AS crime_count FROM mart.fact_crime_events GROUP BY hour_of_day, day_of_week ORDER BY day_of_week, hour_of_day;",
           "refId": "A"
         }
       ],
-      "title": "Crime heatmap (day of week × hour of day)",
+      "title": "Crime heatmap (day of week \u00d7 hour of day)",
       "type": "heatmap"
     },
     {
@@ -570,7 +582,7 @@
         "type": "grafana-bigquery-datasource",
         "uid": "bigquery-analytics"
       },
-      "description": "Scatter plot: trips per station-day vs crimes within 0.25 mile. Each point is one station on one day. The cluster shape reveals whether more crime correlates with more or fewer rides. Phase 4.4 — answers the driving question.",
+      "description": "Scatter plot: trips per station-day vs crimes within 0.25 mile. Each point is one station on one day. The cluster shape reveals whether more crime correlates with more or fewer rides. Phase 4.4 \u2014 answers the driving question.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -736,7 +748,12 @@
   ],
   "refresh": "1m",
   "schemaVersion": 39,
-  "tags": ["phase-3", "phase-4", "analysis", "crime-divvy"],
+  "tags": [
+    "phase-3",
+    "phase-4",
+    "analysis",
+    "crime-divvy"
+  ],
   "templating": {
     "list": []
   },

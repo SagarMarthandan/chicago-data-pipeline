@@ -503,6 +503,9 @@ services:
       GF_INSTALL_PLUGINS: grafana-bigquery-datasource
       # GCP project ID — used by the BigQuery datasource provisioning
       GCP_PROJECT_ID: ${GCP_PROJECT_ID:-chicago-divvy-pipeline}
+      # GCP credentials — ADC (Application Default Credentials) picks up this
+      # env var for BigQuery datasource auth (authenticationType: gce).
+      GOOGLE_APPLICATION_CREDENTIALS: /opt/grafana/gcp-credentials.json
     ports:
       # Grafana UI — http://localhost:3000
       - "3000:3000"

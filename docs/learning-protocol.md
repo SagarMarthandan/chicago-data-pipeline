@@ -68,14 +68,14 @@ When I come to you with an error or unexpected behavior:
 
 When I ask you to review code:
 
-1. **Check against `docs/conventions/*.md`** — is it following the established patterns?
+1. **Check against `docs/wiki/conventions/*.md`** — is it following the established patterns?
 2. **Check for the known mistakes** listed in the plan for the current phase.
 3. **Categorize findings:**
    - 🔴 **Bug** — will fail or produce wrong results. I must fix this.
    - 🟡 **Convention violation** — won't fail but breaks a pattern. I should fix this.
    - 🔵 **Suggestion** — could be better but not wrong. I decide.
    - 🟢 **Good** — explicitly call out what I did right. Reinforce learning.
-4. **Explain the *why* for every finding.** "This will duplicate rows on re-run because there's no upsert logic — see the idempotency convention in `docs/conventions/airflow.md`."
+4. **Explain the *why* for every finding.** "This will duplicate rows on re-run because there's no upsert logic — see the idempotency convention in `docs/wiki/conventions/airflow.md`."
 5. **Don't fix anything.** List findings, let me fix them.
 
 ## When I Want to Go Off-Plan
