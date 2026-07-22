@@ -45,59 +45,7 @@ A BigQuery ML linear regression controlling for station, day of week, and month 
 
 ## Architecture
 
-```mermaid
-graph LR
-    subgraph Sources
-        CC["bigquery-public-data<br/>chicago_crime<br/>8.6M rows"]
-        S3["Divvy S3 Bucket<br/>75 monthly ZIPs<br/>35M trips"]
-        DV["Divvy GBFS API<br/>~60s refresh"]
-    end
-
-    subgraph "Analytics Path (Cloud — BigQuery)"
-        DLT["dlt<br/>load_divvy_trips.py"]
-        BQ[("BigQuery<br/>raw + staging + mart")]
-        DBT["DBT<br/>(dbt-bigquery)"]
-        BQM[("BigQuery<br/>mart.* tables")]
-        GR["Grafana<br/>dashboards"]
-    end
-
-    subgraph "Streaming Path (Local Postgres)"
-        KP[Kafka Producer]
-        KT[(Kafka Topic)]
-        SS[Spark Structured Streaming]
-        PG[("Postgres<br/>raw.station_status")]
-    end
-
-    subgraph "Observability"
-        OBS["Postgres<br/>observability"]
-    end
-
-    CC -->|"DBT source()"| DBT
-    S3 -->|"S3 ZIP → CSV"| DLT
-    DLT -->|"append"| BQ
-    BQ --> DBT
-    DBT --> BQM
-    DBT -->|test results| OBS
-    BQM --> GR
-    OBS --> GR
-
-    DV -->|live stream| KP
-    KP --> KT
-    KT --> SS
-    SS --> PG
-
-    AF["Airflow<br/>orchestration"] -.-> DLT
-    AF -.-> DBT
-    AF -.-> KP
-
-    style CC fill:#f9d0c4,stroke:#e8744c
-    style S3 fill:#c4e8f9,stroke:#4c9ee8
-    style DV fill:#c4e8f9,stroke:#4c9ee8
-    style BQ fill:#d4f4dd,stroke:#4ca85a
-    style BQM fill:#d4f4dd,stroke:#4ca85a
-    style PG fill:#fff3cd,stroke:#e8c84c
-    style AF fill:#fff3cd,stroke:#e8c84c
-```
+![Architecture Diagram](docs/images/master_architecture.png)
 
 ## Pipeline Screenshots
 
