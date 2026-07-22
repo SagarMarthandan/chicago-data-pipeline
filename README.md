@@ -451,3 +451,4 @@ bq query --use_legacy_sql=false "SELECT * FROM \`chicago-divvy-pipeline.mart.cri
 | `docs/phases/` | Phase-completion docs with architecture, errors, and verification |
 | `chat-history/current-state.md` | Handoff doc — read first in a new session |
 | `chicago-pipeline-plan.md` | Full phased design and plan |
+# Phase 5 CI/CD
