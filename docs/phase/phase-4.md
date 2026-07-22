@@ -574,9 +574,9 @@ Ingested 34.8M Divvy trip records (2020-04 to 2026-06) from S3 into BigQuery via
 | `dbt/models/marts/dim_stations.sql` | Created | Station dimension from trip data; most common coordinate per station via `ROW_NUMBER()`; `ST_GEOGPOINT` |
 | `dbt/models/marts/fact_station_day.sql` | Created | THE analytics mart: trip_count per station per day + crime_count_within_quarter_mile (ST_DISTANCE ≤ 402m); partitioned by `date_key`, clustered by `station_id` |
 | `dbt/models/marts/crime_ridership_correlation.sql` | Created | CORR() at overall, per_station, per_month scope; UNION ALL result; 30-day minimum for per_station/per_month |
-| `grafana/dashboards/crime_divvy_analysis.json` | Modified | Added scatter plot (panel 7: trip_count vs crime_count) + correlation gauge (panel 8) |
-| `grafana/provisioning/datasources/bigquery.yml` | Created | BigQuery datasource for Grafana (uid: `bigquery-analytics`) |
-| `docker-compose.yml` | Modified | Added `GF_INSTALL_PLUGINS=grafana-bigquery-datasource` to Grafana; GCP credentials mount for Grafana |
+| `grafana/dashboards/crime_divvy_analysis.json` | Modified | Added scatter plot (panel 7: trip_count vs crime_count) + correlation gauge (panel 8); reverted to Postgres datasource (BigQuery plugin auth not working locally) |
+| `grafana/dashboards/pipeline_health.json` | Modified | Reverted all panels to Postgres datasource; sample data loaded from BigQuery for screenshots |
+| `docker-compose.yml` | Modified | Added `GF_INSTALL_PLUGINS=grafana-bigquery-datasource` to Grafana; GCP credentials mount for Grafana; `GOOGLE_APPLICATION_CREDENTIALS` env var |
 
 ### Architecture
 
@@ -649,7 +649,7 @@ $ dbt build --exclude stg_station_status fact_station_reads
 - **Partition pruning:** Filtered query scans 2.17% of full scan (254K vs 11.7M bytes) ✅
 - **fact_station_day:** 1.5M rows, 586 MiB processed ✅
 - **crime_ridership_correlation:** 3.2K rows (1 overall + ~1.5K per_station + 75 per_month) ✅
-- **Grafana panels:** Scatter plot + correlation gauge added with BigQuery datasource ✅
+- **Grafana panels:** Scatter plot + correlation gauge querying Postgres (sample data exported from BigQuery) ✅
 
 ### Key Finding
 
