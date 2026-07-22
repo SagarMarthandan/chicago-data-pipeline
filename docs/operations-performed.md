@@ -30,6 +30,8 @@ A chronological log of operations, files created, and structural changes made to
 - [2026-07-20 — Phase 3.4: Verification](#2026-07-20--phase-34-verification)
 - [2026-07-21 — Phase 4.1: Warehouse Choice + GCP Project Setup](#2026-07-21--phase-41-warehouse-choice--gcp-project-setup)
 - [2026-07-21 — Phase 4.2: Terraform (BigQuery + GCS provisioning)](#2026-07-21--phase-42-terraform-bigquery--gcs-provisioning)
+- [2026-07-21 — Phase 4.3: Architecture Change (Postgres → GCS/BigQuery)](#2026-07-21--phase-43-architecture-change-postgres--gcsbigquery)
+- [2026-07-22 — Phase 4.4: Divvy Trip History + Correlation Analysis](#2026-07-22--phase-44-divvy-trip-history--correlation-analysis)
 ---
 
 ## 2026-07-08 — Project Setup & Migration
@@ -1033,3 +1035,65 @@ Also tested each task individually via `airflow tasks test` during debugging (be
 
 ### Next — Phase 4.4: Divvy trip history (Airbyte S3 → BigQuery)
 Use Airbyte to ingest Divvy trip history from S3 into BigQuery. Then update `dim_date` to span crime + Divvy trip dates, and build the final mart that answers the driving question.
+
+
+## 2026-07-22 — Phase 4.4: Divvy Trip History + Correlation Analysis
+
+### Why
+Phase 4.4 is the final phase that answers the driving question: "Does crime near a Divvy station affect ridership?" It ingests full Divvy trip history from S3, switches crime data to the BigQuery public dataset, builds the geospatial analytics mart, and produces the correlation coefficient.
+
+### Files Created
+- `ingestion/load_divvy_trips.py` — dlt S3→BigQuery ingestion script. Reads monthly ZIP files from `divvy-tripdata.s3.amazonaws.com`, extracts CSV, streams rows to BigQuery `raw.divvy_trips` (append mode). CLI: `--month YYYYMM`, `--from/--to YYYYMM`, `--all`, `--dry-run`.
+- `airflow/dags/divvy_trip_history_dag.py` — 3-task DAG: `load_divvy_trips` (BashOperator runs dlt script) → `dbt_build_divvy` (DockerOperator runs dbt build) → `record_dbt_results` (BashOperator runs recorder script).
+- `dbt/models/staging/stg_divvy_trips.sql` — Staging view on `raw.divvy_trips`. Casts types (SAFE_CAST for lat/lng, try_cast for timestamps), filters null ride_id/started_at + out-of-bounds coordinates (Montreal row).
+- `dbt/models/marts/dim_stations.sql` — Station dimension from trip data. Groups by `start_station_id`, picks most common station name (`ANY_VALUE HAVING MAX`) + most common coordinate pair (`ROW_NUMBER` by occurrence count). Includes `ST_GEOGPOINT` for geospatial joins.
+- `dbt/models/marts/fact_divvy_trips.sql` — Divvy trip fact table. Partitioned by `started_at` (daily), clustered by `start_station_id`. Includes derived `trip_duration_seconds` = `TIMESTAMP_DIFF(ended_at, started_at, SECOND)`.
+- `dbt/models/marts/fact_station_day.sql` — THE analytics mart. One row per station per day. `trip_count` from `fact_divvy_trips`, `crime_count_within_quarter_mile` from geospatial join: `ST_DISTANCE(ST_GEOGPOINT(crime.lng, crime.lat), station.geo_point) <= 402` (0.25 mile). Partitioned by `date_key`, clustered by `station_id`.
+- `dbt/models/marts/crime_ridership_correlation.sql` — CORR(trip_count, crime_count_within_quarter_mile) at three scopes: overall, per_station (≥30 days), per_month (≥30 station-days). UNION ALL result with scope label.
+- `grafana/provisioning/datasources/bigquery.yml` — BigQuery datasource for Grafana (uid: `bigquery-analytics`, project: `chicago-divvy-pipeline`).
+- `docs/phases/phase-4.4-divvy-trip-history.md` — Phase completion doc.
+- `docs/knowledge/dlt.md` — dlt reference doc.
+
+### Files Modified
+- `airflow/requirements.txt` — Added `dlt[bigquery]`.
+- `airflow/dags/crime_batch_dag.py` — Simplified to 2 tasks: `dbt_build` → `record_dbt_results`. Removed `download_crime`, `spark_crime_batch`, `bq_load_crime` (crime now sourced from `bigquery-public-data.chicago_crime` directly in DBT).
+- `dbt/models/staging/schema.yml` — Added `chicago_crime_public` source (database: `bigquery-public-data`, schema: `chicago_crime`, table: `crime`). Added `divvy_trips` to `raw` source. Added `stg_divvy_trips` model with tests (unique ride_id, not_null, coordinate bounds).
+- `dbt/models/staging/stg_crime_events.sql` — Rewrote to read from `bigquery-public-data.chicago_crime.crime`. Column mapping: `unique_key`→`crime_id`, `date`→`occurred_at`, `updated_on`→`updated_at`. Filter: `year >= 2018` + Chicago coordinate bounds (lat 41.64–42.03, lon -87.95–-87.52). Dedup: `QUALIFY ROW_NUMBER() OVER(PARTITION BY unique_key ORDER BY updated_on DESC) = 1`.
+- `dbt/models/marts/dim_date.sql` — UNION of min/max dates from both `stg_crime_events` + `stg_divvy_trips` (2018–2026).
+- `dbt/models/marts/fact_crime_events.sql` — Added `c.primary_type` to SELECT (needed for `cluster_by`). Partitioned by `date_key`, clustered by `community_area_id` + `primary_type`.
+- `dbt/models/marts/schema.yml` — Added `dim_stations`, `fact_divvy_trips`, `fact_station_day`, `crime_ridership_correlation` model definitions with tests. Updated `dim_date` year test bounds (2018–2026).
+- `grafana/dashboards/crime_divvy_analysis.json` — Added panel 7 (scatter plot: trip_count vs crime_count_within_quarter_mile, last 30 days) + panel 8 (gauge: overall Pearson correlation from `crime_ridership_correlation`). Updated description + tags.
+- `docker-compose.yml` — Added `GF_INSTALL_PLUGINS=grafana-bigquery-datasource` to Grafana env. Mounted GCP credentials at `/opt/grafana/gcp-credentials.json:ro`.
+
+### Data flow (Phase 4.4)
+```mermaid
+graph LR
+    S3[Divvy S3 Bucket] -->|dlt| BQ_RAW[BigQuery raw.divvy_trips 34.8M rows]
+    PUB[bigquery-public-data.chicago_crime] -->|stg_crime_events| STG[Staging Views]
+    BQ_RAW -->|stg_divvy_trips| STG
+    STG --> FSD[fact_station_day 1.5M rows]
+    FSD --> CORR[crime_ridership_correlation]
+    CORR -->|Grafana| PANELS[Scatter + Gauge]
+```
+
+### Verification
+- **dlt sample test:** June 2023 → 719,618 rows loaded into `raw.divvy_trips` ✅
+- **Full ingestion:** 34,751,413 rows across 75 months (2020-04 to 2026-06) ✅
+- **DBT build:** 67/67 tests pass (PASS=67 WARN=0 ERROR=0 SKIP=0) ✅
+- **Partition pruning:** Filtered query (Jan 2024) scans 254K bytes vs 11.7M full scan = 2.17% (97.8% savings) ✅
+- **Correlation:** Overall Pearson r = +0.2003 (n=1,463,049). Per-month range: 0.08–0.31. Per-station range: NaN–0.85. ✅
+- **Grafana:** Scatter plot + correlation gauge panels added with BigQuery datasource ✅
+
+### Key Finding
+**Overall Pearson correlation = +0.20** — weak positive correlation between daily trip count and crime count within 402m of a station. This does NOT mean crime causes ridership. Both are higher in busy, densely populated areas. The confounding variable is urban activity level. Per-month correlations trend upward from 0.08 (Apr 2020, COVID lockdown) to ~0.25-0.30 (2024-2025).
+
+### Errors hit
+1. **Airflow containers running old image** — `--force-recreate` didn't pick up new dlt image. Fix: `docker compose down` + `docker compose build` + `docker compose up -d`.
+2. **Coordinate test failures** — Public crime dataset had 4 rows in Missouri; Divvy had 1 row in Montreal. Fix: Added coordinate bounds filters in staging models.
+3. **`cluster_by` column missing from SELECT** — `fact_crime_events` clustered by `primary_type` but only selected `crime_type_key`. Fix: Added `c.primary_type` to SELECT.
+4. **Missing FROM clause** — Edit accidentally removed `FROM {{ source() }}` from `stg_divvy_trips`. Fix: Re-added the line.
+5. **Column name mismatch in correlation CTE** — `overall` CTE used `total_station_days` but SELECT referenced `station_day_count`. Fix: Renamed for consistency.
+6. **Stale dimension tables** — `dim_date` and `dim_crime_type` not rebuilt because `--select +fact_station_day` didn't include them in parent graph. Fix: Full `dbt build --exclude stg_station_status fact_station_reads`.
+
+### Next — Phase 5: CI/CD (GitHub Actions + GHCR)
+Branch protection, PR checks (ruff + dbt parse + compose validate), versioned releases, image push to GHCR.

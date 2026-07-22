@@ -22,10 +22,34 @@ sources:
       - name: station_status
         # Stays on local Postgres (streaming path). Not in BigQuery.
         # Source definition exists only so stg_station_status compiles.
+      - name: divvy_trips
+        # Phase 4.4 — loaded by dlt from S3 CSVs (divvy-tripdata.s3.amazonaws.com).
+        # Monthly ZIPs 2020-04 onward. ~50M rows total.
+        # Columns: ride_id, rideable_type, started_at, ended_at,
+        # start_station_name, start_station_id, end_station_name,
+        # end_station_id, start_lat, start_lng, end_lat, end_lng,
+        # member_casual, source_month
+
+  # Phase 4.4 — BigQuery public crime dataset (replaces Socrata extract)
+  # This is the official Chicago PD crime dataset, 2001-present (~8.6M rows).
+  # Referenced directly in DBT — no ingestion needed (free to query).
+  # stg_crime_events now reads from this source instead of raw.crime_events.
+  # The Socrata pipeline (crime_batch DAG) still loads raw.crime_events as a
+  # fallback, but the analytics marts use the public dataset for full history.
+  - name: chicago_crime_public
+    database: bigquery-public-data
+    schema: chicago_crime
+    tables:
+      - name: crime
+        # Columns: unique_key (INT64 REQUIRED), case_number, date (TIMESTAMP),
+        # block, iucr, primary_type, description, location_description,
+        # arrest (BOOL), domestic (BOOL), beat, district, ward,
+        # community_area, fbi_code, x_coordinate, y_coordinate, year,
+        # updated_on (TIMESTAMP), latitude, longitude, location (GEOGRAPHY)
 
 models:
   - name: stg_crime_events
-    description: "1:1 with raw.crime_events. Renames columns, casts types, deduplicates on id."
+    description: "Staging view on bigquery-public-data.chicago_crime.crime (Phase 4.4). Filters to 2018-present, deduplicates on unique_key."
     columns:
       - name: crime_id
         description: "Unique crime case ID — primary key"
@@ -104,3 +128,38 @@ models:
           - dbt_expectations.expect_column_values_to_be_between:
               min_value: 0
               max_value: 100
+
+
+  - name: stg_divvy_trips
+    description: "Staging view on raw.divvy_trips. Casts types, filters null ride_id/started_at. Phase 4.4."
+    columns:
+      - name: ride_id
+        description: "Unique ride identifier. Primary key."
+        tests:
+          - not_null
+      - name: started_at
+        description: "Trip start timestamp."
+        tests:
+          - not_null
+      - name: ended_at
+        description: "Trip end timestamp."
+      - name: rideable_type
+        description: "Bike type: classic_bike, electric_bike, etc."
+      - name: start_station_id
+        description: "Start station ID (string). Can be null for ebikes without station."
+      - name: start_lat
+        description: "Start latitude. Can be null."
+        tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 41.0
+              max_value: 42.5
+              config:
+                where: "start_lat IS NOT NULL"
+      - name: start_lng
+        description: "Start longitude. Can be null."
+        tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: -88.5
+              max_value: -87.0
+              config:
+                where: "start_lng IS NOT NULL"

@@ -1,13 +1,12 @@
 -- ============================================================
--- dim_date — date dimension (Phase 4.3 — crime dates only)
+-- dim_date — date dimension (Phase 4.4 — crime + Divvy trip dates)
 -- ============================================================
 -- Generates a row for every date between the earliest and latest
--- crime dates. Previously (Phase 1-3) this spanned BOTH crime + station
--- sources, but station_status stays on local Postgres in Phase 4.
--- When Divvy trip history is ingested in Phase 4.6, this will span
--- crime + Divvy trip dates.
+-- dates across both crime events and Divvy trips.
+-- Phase 1-3: crime only. Phase 4.3: crime only (BigQuery migration).
+-- Phase 4.4: crime (2018-present) + Divvy trips (2020-present).
 --
--- Source: {{ ref('stg_crime_events') }}
+-- Sources: {{ ref('stg_crime_events') }} + {{ ref('stg_divvy_trips') }}
 -- Output: mart.dim_date (table)
 --
 -- BigQuery notes:
@@ -15,11 +14,26 @@
 --   - EXTRACT works the same. FORMAT_TIMESTAMP replaces TO_CHAR.
 -- ============================================================
 
-WITH date_bounds AS (
+WITH crime_bounds AS (
     SELECT
         MIN(occurred_at) AS min_ts,
         MAX(occurred_at) AS max_ts
     FROM {{ ref('stg_crime_events') }}
+),
+
+divvy_bounds AS (
+    SELECT
+        MIN(started_at) AS min_ts,
+        MAX(started_at) AS max_ts
+    FROM {{ ref('stg_divvy_trips') }}
+),
+
+date_bounds AS (
+    SELECT
+        LEAST(c.min_ts, d.min_ts) AS min_ts,
+        GREATEST(c.max_ts, d.max_ts) AS max_ts
+    FROM crime_bounds c
+    CROSS JOIN divvy_bounds d
 ),
 
 date_series AS (

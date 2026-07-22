@@ -37,6 +37,7 @@ A running log of changes, errors, and fixes throughout the project. Use this to 
 - [2026-07-21 — Phase 4.1: Warehouse Choice + GCP Project Setup](#2026-07-21--phase-41-warehouse-choice--gcp-project-setup)
 - [2026-07-21 — Phase 4.2: Terraform (BigQuery + GCS provisioning)](#2026-07-21--phase-42-terraform-bigquery--gcs-provisioning)
 - [2026-07-21 — Phase 4.3: Architecture Change (Postgres → GCS/BigQuery)](#2026-07-21--phase-43-architecture-change-postgres--gcsbigquery)
+- [2026-07-22 — Phase 4.4: Divvy Trip History + Correlation Analysis](#2026-07-22--phase-44-divvy-trip-history--correlation-analysis)
 
 ---
 
@@ -879,3 +880,35 @@ No errors encountered. All 59 DBT tests passed on first run.
 - **Docker Compose image naming** — without an explicit `image:` tag in a service, Compose generates a name per-service. `docker compose build airflow-init` builds a different image than `docker compose build airflow-scheduler`. Always build the specific service you're recreating, or add explicit `image:` tags.
 - **Bind mount permissions across UIDs** — a file `chmod 600` owned by host UID 1000 is unreadable by a container running as UID 50000 (Airflow's default). For mounted secrets, use `chmod 644` or match the container UID. The file is still gitignored + on the user's machine.
 - **BigQuery SQL dialect differences** — Postgres `DISTINCT ON` → BigQuery `QUALIFY ROW_NUMBER() OVER(...) = 1`. `generate_series` → `GENERATE_DATE_ARRAY + UNNEST`. `TO_CHAR` → `FORMAT_TIMESTAMP`. `::type` casts work in BigQuery but `SAFE_CAST`/`CAST` is more idiomatic. `DATE_TRUNC(date, MONTH)` arg order is the same in both.
+
+
+## 2026-07-22 — Phase 4.4: Divvy Trip History + Correlation Analysis
+
+### Changes
+- **dlt ingestion:** Installed `dlt[bigquery]` 1.29.0 in Airflow. Created `ingestion/load_divvy_trips.py` — S3 ZIP → CSV extract → dlt load → BigQuery `raw.divvy_trips` (append mode). Ingested 34,751,413 rows across 75 months (2020-04 to 2026-06).
+- **Crime source switch:** `stg_crime_events.sql` rewritten to read from `bigquery-public-data.chicago_crime.crime` (8.6M rows, 2001-present) instead of `raw.crime_events` (263K Socrata extract). Column mapping: `unique_key`→`crime_id`, `date`→`occurred_at`, `updated_on`→`updated_at`. Filtered to `year >= 2018` for Divvy overlap.
+- **New DBT models:** `stg_divvy_trips` (staging view), `dim_stations` (station dimension with ST_GEOGPOINT), `fact_divvy_trips` (partitioned by `started_at`, clustered by `start_station_id`), `fact_station_day` (THE analytics mart — trip_count per station per day + crime_count_within_quarter_mile via ST_DISTANCE ≤ 402m, partitioned by `date_key`), `crime_ridership_correlation` (CORR() at overall/per_station/per_month scope).
+- **Partitioning:** `fact_crime_events` partitioned by `date_key`, clustered by `community_area_id` + `primary_type`. `fact_divvy_trips` partitioned by `started_at`, clustered by `start_station_id`. `fact_station_day` partitioned by `date_key`, clustered by `station_id`.
+- **Airflow DAGs:** Created `divvy_trip_history_dag.py` (3 tasks: load → dbt_build → record). Simplified `crime_batch_dag.py` to 2 tasks (dbt_build → record) — removed download/spark/bq_load since crime uses public dataset.
+- **Grafana:** Added BigQuery datasource plugin (`grafana-bigquery-datasource`). Added scatter plot (panel 7: trip_count vs crime_count) + correlation gauge (panel 8: overall Pearson r).
+- **dim_date:** Updated to UNION min/max dates from both crime + Divvy sources (2018–2026).
+
+### Errors & Fixes
+
+| # | Error | Root Cause | Fix |
+|---|---|---|---|
+| 1 | Airflow containers running old image (ModuleNotFoundError: No module named 'dlt') | Compose `--force-recreate` reused cached image; separate image names per service | `docker compose down` + `docker compose build` + `docker compose up -d` |
+| 2 | DBT stg_crime_events coordinate tests fail (4 rows in Missouri: lat ~36.6, lon ~-91.7) | Public dataset has data entry errors with out-of-bounds coordinates | Added WHERE clause filtering to Chicago bounds (lat 41.64–42.03, lon -87.95–-87.52); kept nulls (valid crimes with unknown location) |
+| 3 | DBT stg_divvy_trips coordinate test fails (1 row in Montreal: lat 45.6, lon -73.8) | 1 row had Montreal coordinates — data entry error | Added WHERE clause filtering to Chicago area (lat 41.0–42.5, lon -88.5–-87.0); kept nulls (dockless ebikes) |
+| 4 | DBT fact_crime_events error: "Unrecognized name: primary_type at [9:35]" | `cluster_by=["primary_type"]` but `primary_type` was not in the SELECT output (only `crime_type_key` was) | Added `c.primary_type` to the SELECT list |
+| 5 | DBT stg_divvy_trips error: "Query without FROM clause cannot have WHERE clause at [56:1]" | Edit accidentally removed the `FROM {{ source('raw', 'divvy_trips') }}` line | Re-added the FROM clause |
+| 6 | DBT crime_ridership_correlation error: "Unrecognized name: station_day_count at [79:5]" | `overall` CTE named the column `total_station_days` but the SELECT referenced `station_day_count` | Renamed to `station_day_count` in the `overall` CTE for consistency with `per_station` and `per_month` CTEs |
+| 7 | DBT relationships tests fail (28M+ rows for date_key → dim_date, 106K for crime_type_key → dim_crime_type) | `dim_date` and `dim_crime_type` were stale from Phase 4.3 (built from 2023-only Socrata data). `--select +fact_station_day` only includes parent models via `ref()`, but `dim_date` is not a parent of `fact_station_day` | Ran full `dbt build --exclude stg_station_status fact_station_reads` to rebuild all models including `dim_date` and `dim_crime_type` |
+
+### Lessons Summary
+- **`cluster_by` columns must be in the SELECT output** — BigQuery can only cluster on columns that exist in the materialized table. If you cluster by a column you transform away (e.g. `primary_type` → `crime_type_key`), add the original column to the SELECT.
+- **`--select +model` only includes parent models** — `dim_date` wasn't a parent of `fact_station_day` (no `ref()` call), so it wasn't rebuilt. When switching data sources, do a full build to refresh all dimensions.
+- **Public datasets have data quality issues** — `bigquery-public-data.chicago_crime` has rows with Missouri coordinates. Always add coordinate bounds filters in staging, even for "trusted" public datasets.
+- **dlt is a lightweight Airbyte alternative** — 1 Python file, no extra containers, native BigQuery support. Chosen over Airbyte (5-6 containers, 2-4GB RAM) for WSL2 resource constraints.
+- **Edit tool can accidentally remove lines** — when using SWAP on a WHERE clause, the FROM clause above can be lost if the range is mis-specified. Always read after editing to verify structural integrity.
+- **Correlation ≠ causation** — overall Pearson r = +0.20 (weak positive). Both crime and ridership are higher in busy areas. The confounding variable is urban activity level, not a causal relationship.

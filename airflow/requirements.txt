@@ -33,3 +33,12 @@ kafka-python
 # Auth via GOOGLE_APPLICATION_CREDENTIALS env var (mounted key file).
 # ============================================================
 google-cloud-bigquery
+# ============================================================
+# dlt (data load tool) — Phase 4.4 Divvy trip ingestion
+# ============================================================
+# dlt is a Python ELT library that handles schema inference, type
+# casting, and loading into BigQuery. Used to ingest Divvy trip
+# history from S3 CSVs → BigQuery raw.divvy_trips.
+# The [bigquery] extra installs the BigQuery destination adapter.
+# ============================================================
+dlt[bigquery]

@@ -1,6 +1,6 @@
 # Current State — Handoff Document
 
-> **Read this first in a new session.** This file is the handoff: current state, active decisions, and next steps. Last updated: 2026-07-21 (Phase 4.3 COMPLETE — batch pipeline migrated to GCS/BigQuery).
+> **Read this first in a new session.** This file is the handoff: current state, active decisions, and next steps. Last updated: 2026-07-22 (Phase 4.4 COMPLETE — driving question answered, correlation coefficient produced).
 
 ---
 
@@ -10,7 +10,7 @@ Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project t
 
 - **Repo:** `~/chicago-data-pipeline/` (WSL, Ubuntu on Windows 10)
 - **Git:** initialized on `main`, no commits yet (user commits manually)
-- **Phase:** 1 COMPLETE. Phase 2 COMPLETE (2.1–2.6). Phase 3 COMPLETE (3.1–3.4). Phase 4 IN PROGRESS: 4.1 GCP setup ✅, 4.2 Terraform ✅, 4.3 Architecture change (Postgres→GCS/BigQuery) ✅. Phase 4.4 NEXT (Divvy trip history via Airbyte). Phase 5 locked.
+- **Phase:** 1 COMPLETE. Phase 2 COMPLETE (2.1–2.6). Phase 3 COMPLETE (3.1–3.4). Phase 4 COMPLETE: 4.1 GCP setup ✅, 4.2 Terraform ✅, 4.3 Architecture change ✅, 4.4 Divvy trip history + correlation analysis ✅. **The driving question is answered.** Phase 5 NEXT (CI/CD).
 - **AI mode:** AI-writes-code (user said "you write it" — explicit mode switch from Socratic)
 
 ## Tech Stack
@@ -224,7 +224,7 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
 - DBT tests catch a deliberately introduced data quality issue ✅ (Scenario 2)
 - Airflow retries a deliberately failing task and alerts on SLA miss ✅ (Scenario 3 — used execution_timeout + failed-tasks panel since Airflow 3.0 removed SLA)
 
-## Phase 4 — IN PROGRESS (4.1, 4.2, 4.3 COMPLETE; 4.4 NEXT)
+## Phase 4 — COMPLETE (4.1, 4.2, 4.3, 4.4 ALL DONE)
 
 ### Phase 4.1 — GCP Project Setup (COMPLETE)
 - Chose BigQuery over Snowflake/Redshift: free tier, serverless, DBT first-class.
@@ -246,8 +246,17 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
 - **Verification**: All 4 tasks tested individually (download_crime failed on network timeout — pre-existing, not 4.3 related). spark_crime_batch: 263,402 rows→GCS. bq_load_crime: 263,403 rows→BigQuery. dbt_build: 38/38 tests pass. record_dbt_results: 32 results→Postgres. BigQuery marts verified: dim_date(365), fact_crime_events(263,403), dim_community_area(77), dim_crime_type(323).
 - **6 errors hit**: Docker credential helper, stale Airflow image, bq CLI auth, credentials file permissions, DBT `--exclude` parsing, Socrata timeout. See changelog for details.
 
-### Phase 4.4 — Divvy Trip History (NEXT, LOCKED until 4.3 verified)
-Use Airbyte to ingest Divvy trip history from S3 into BigQuery. Then update `dim_date` to span crime + Divvy trip dates, and build the final mart that answers the driving question. Also reference `bigquery-public-data.chicago_crime` (8M rows) for full crime history.
+### Phase 4.4 — Divvy Trip History + Correlation Analysis (COMPLETE)
+- **dlt ingestion:** Installed `dlt[bigquery]` 1.29.0. Created `ingestion/load_divvy_trips.py` — S3 ZIP → CSV → BigQuery `raw.divvy_trips` (append mode). Ingested 34,751,413 rows across 75 months (2020-04 to 2026-06).
+- **Crime source switch:** `stg_crime_events` now reads from `bigquery-public-data.chicago_crime.crime` (8.6M rows, 2001-present) instead of 263K-row Socrata extract. Filtered to `year >= 2018` for Divvy overlap.
+- **New DBT models:** `stg_divvy_trips`, `dim_stations` (ST_GEOGPOINT), `fact_divvy_trips` (partitioned by `started_at`), `fact_station_day` (THE analytics mart — geospatial join ST_DISTANCE ≤ 402m, 1.5M rows), `crime_ridership_correlation` (CORR() at 3 scopes, 3.2K rows).
+- **Partitioning:** `fact_crime_events` (date_key + community_area_id/primary_type), `fact_divvy_trips` (started_at + start_station_id), `fact_station_day` (date_key + station_id). Verified pruning: 2.17% of full scan (97.8% savings).
+- **Airflow DAGs:** Created `divvy_trip_history_dag.py` (3 tasks). Simplified `crime_batch_dag.py` to 2 tasks (removed download/spark/bq_load).
+- **Grafana:** BigQuery datasource + scatter plot (panel 7) + correlation gauge (panel 8).
+- **DBT build:** 67/67 tests pass. All models materialized as tables (required for BigQuery partitioning).
+- **Key finding:** Overall Pearson correlation = **+0.20** (weak positive). Both crime and ridership are higher in busy areas — confounding variable is urban activity level, not causation. Per-month range: 0.08 (Apr 2020 COVID) to 0.31 (Sep 2024).
+- **7 errors hit:** stale Airflow image, coordinate test failures (Missouri + Montreal rows), missing `primary_type` in SELECT for cluster_by, missing FROM clause (edit accident), column name mismatch in correlation CTE, stale dim_date/dim_crime_type. See changelog for details.
+- See `docs/phases/phase-4.4-divvy-trip-history.md` for full details.
 
 ## Files Created (full repo structure)
 
@@ -258,36 +267,29 @@ Use Airbyte to ingest Divvy trip history from S3 into BigQuery. Then update `dim
 ├── .vscode/settings.json
 ├── AGENTS.md
 ├── README.md
-├── docker-compose.yml        ← 11 services + spark_checkpoints + grafana_data volumes (Phase 1 + 2 + 3.1 + 3.2), YAML anchors
+├── docker-compose.yml        ← 12 services (Phase 1+2+3+4), Grafana BigQuery plugin, GCP credentials mounts, YAML anchors
+├── terraform/                ← Phase 4.2 — BigQuery datasets + GCS bucket
 ├── airflow/
-│   ├── Dockerfile
+│   ├── Dockerfile            ← includes gcloud SDK, dlt[bigquery]
 │   ├── passwords.json
-│   ├── requirements.txt      ← now includes kafka-python
+│   ├── requirements.txt      ← kafka-python, dlt[bigquery], google-cloud-bigquery
 │   ├── scripts/
-│   │   └── record_dbt_results.py ← Phase 3.2 — parses dbt run_results.json → observability.dbt_test_results
+│   │   └── record_dbt_results.py
 │   ├── dags/
-│   │   ├── crime_batch_dag.py    ← Phase 1.5 + 3.2 (record_dbt_results) + 3.3 (SqlSensor, retries, execution_timeout, on_failure_callback)
-│   │   ├── divvy_stream_dag.py   ← Phase 2.6 + 3.2 (record_dbt_results) + 3.3 (retries, execution_timeout, on_failure_callback, retries=0 on cleanup)
-│   │   └── callbacks.py          ← Phase 3.3 — shared on_failure_callback
+│   │   ├── crime_batch_dag.py    ← Phase 4.4 — simplified to 2 tasks (dbt_build → record), crime from public dataset
+│   │   ├── divvy_stream_dag.py   ← Phase 2.6 + 3.2 + 3.3
+│   │   ├── divvy_trip_history_dag.py ← Phase 4.4 — 3 tasks (load → dbt_build → record)
+│   │   └── callbacks.py
 │   └── dbt_profiles/profiles.yml
 ├── spark/
-│   ├── Dockerfile            ← apache/spark:3.5.1 + JDBC + Kafka connector + entrypoint (Phase 2.6)
-│   ├── entrypoint.sh         ← Phase 2.6 — chowns checkpoint volume, drops to spark via gosu
+│   ├── Dockerfile            ← apache/spark:3.5.1 + JDBC + Kafka + GCS connector
+│   ├── entrypoint.sh
 │   └── jobs/
-│       ├── crime_batch.py
-│       └── divvy_stream.py   ← Phase 2.4 — Structured Streaming consumer
+│       ├── crime_batch.py    ← Phase 4.3 — writes to GCS
+│       └── divvy_stream.py
 ├── ingestion/
-│   └── download_crime.py
-├── grafana/                   ← Phase 3.1
-│   ├── provisioning/
-│   │   ├── datasources/postgres.yml  ← 2 datasources (chicago-analytics + airflow-metadata)
-│   │   └── dashboards/dashboards.yml ← dashboard provider
-│   └── dashboards/
-│       ├── pipeline_health.json      ← 11-panel pipeline health dashboard (DBT panel wired live in 3.2, failed-tasks panel added in 3.3)
-│       └── crime_divvy_analysis.json ← 6-panel analysis dashboard
-├── kafka/                    ← Phase 2.3
-│   └── producers/
-│       └── divvy_producer.py ← GBFS → Kafka producer
+│   ├── download_crime.py
+│   └── load_divvy_trips.py   ← Phase 4.4 — dlt S3→BigQuery ingestion
 ├── dbt/
 │   ├── Dockerfile
 │   ├── dbt_project.yml
@@ -295,70 +297,55 @@ Use Airbyte to ingest Divvy trip history from S3 into BigQuery. Then update `dim
 │   ├── macros/
 │   ├── models/
 │   │   ├── staging/
-│   │   │   ├── stg_crime_events.sql
-│   │   │   ├── stg_station_status.sql  ← NEW (Phase 2.5)
+│   │   │   ├── stg_crime_events.sql  ← Phase 4.4 — reads from bigquery-public-data
+│   │   │   ├── stg_divvy_trips.sql   ← Phase 4.4 — staging for Divvy trips
+│   │   │   ├── stg_station_status.sql
 │   │   │   └── schema.yml
 │   │   └── marts/
-│   │       ├── dim_date.sql             ← MODIFIED (Phase 2.5 — spans both sources)
+│   │       ├── dim_date.sql             ← Phase 4.4 — spans crime + Divvy dates (2018-2026)
 │   │       ├── dim_community_area.sql
 │   │       ├── dim_crime_type.sql
-│   │       ├── fact_crime_events.sql
-│   │       ├── fact_station_reads.sql   ← NEW (Phase 2.5)
+│   │       ├── dim_stations.sql         ← Phase 4.4 — station dimension with ST_GEOGPOINT
+│   │       ├── fact_crime_events.sql    ← Phase 4.4 — partitioned + clustered
+│   │       ├── fact_divvy_trips.sql     ← Phase 4.4 — partitioned + clustered
+│   │       ├── fact_station_day.sql     ← Phase 4.4 — THE analytics mart (geospatial join)
+│   │       ├── fact_station_reads.sql
+│   │       ├── crime_ridership_correlation.sql ← Phase 4.4 — CORR() at 3 scopes
 │   │       └── schema.yml
 │   ├── packages.yml
 │   ├── tests/
 │   │   └── assert_crime_in_chicago_bounds.sql ← Phase 3.2 — singular geographic bounds test
-│   └── seeds/community_areas.csv
-├── data/
-│   └── raw/crime/crime_2023.parquet
-├── chat-history/
-│   └── current-state.md      ← THIS FILE
 └── docs/
     ├── knowledge/
-    │   ├── data-sources.md   ← expanded with full GBFS schema (Phase 2.1)
-    │   ├── grafana.md        ← Phase 3.1–3.4 — comprehensive reference: concepts, provisioning, env var gotchas, jsonData.database deep dive, DAG run order (sensor fixes race), 11-panel inventory, 10 common mistakes, Phase 3.2–3.4 (DBT panel, failed-tasks panel, thresholds as alerts, verification approach)
+    │   ├── data-sources.md   ← Phase 2.1 + 4.4 (GBFS schema + Divvy S3 + dlt)
+    │   ├── grafana.md        ← Phase 3.1–3.4
+    │   ├── dlt.md            ← Phase 4.4 — dlt reference
+    │   ├── gcp.md            ← Phase 4.1
+    │   ├── terraform.md      ← Phase 4.2
     │   ├── wsl.md, uv.md, docker-compose.md, postgres.md, dbt.md, spark.md
-    │   ├── architecture.md   ← 10 sections (now includes Kafka + Zookeeper + Spark Streaming)
-    │   ├── kafka.md          ← full concepts + 8 mermaid diagrams + Spark consumer + checkpointing
-    │   ├── airflow.md
-    │   ├── git.md
-    │   ├── data-sources.md   ← expanded with full GBFS schema (Phase 2.1)
-    │   └── mermaid-syntax.md
+    │   ├── architecture.md   ← 10 sections
+    │   ├── kafka.md, airflow.md, git.md, mermaid-syntax.md
     ├── learning-protocol.md
-    ├── operations-performed.md ← TOC + entries through Phase 3.4
+    ├── operations-performed.md ← TOC + entries through Phase 4.4
     ├── phases/
     │   ├── phase-1.1-docker.md through phase-1.6-verification.md
     │   ├── phase-2.1-gbfs-data-source.md through phase-2.6-airflow-stream-dag.md
-    │   ├── phase-3.1-grafana.md             ← Phase 3.1
-    │   ├── phase-3.2-dbt-tests.md           ← Phase 3.2
-    │   ├── phase-3.3-airflow-robustness.md  ← Phase 3.3
-    │   └── phase-3.4-verification.md        ← Phase 3.4
+    │   ├── phase-3.1-grafana.md through phase-3.4-verification.md
+    │   └── phase-4.4-divvy-trip-history.md  ← Phase 4.4
     └── conventions/
         ├── airflow.md, dbt.md, docker.md, spark.md
 ```
 
 ## Next Steps
 
-1. **Phase 3: Observability** — Grafana dashboards + DBT tests + Airflow SLAs
-   - **3.1 Grafana: COMPLETE** ✅ — grafana service + 2 datasources + 2 dashboards (Pipeline Health + Crime + Divvy Analysis). All 16 panel queries verified against live data.
-   - **3.2 DBT tests: COMPLETE** ✅ — singular bounds test `assert_crime_in_chicago_bounds.sql` + `record_dbt_results.py` recorder writing to `observability.dbt_test_results` + `record_dbt_results` task in both DAGs + Grafana DBT panel wired to live test outcomes (passing=52, failing=0, warnings=0).
-   - **3.3 Airflow robustness: COMPLETE** ✅ — SqlSensor race condition fix + `on_failure_callback` + retries=3 + `execution_timeout=30min` on dbt_build + `retries=0` on cleanup + `AIRFLOW_CONN_POSTGRES_DEFAULT` env var + Grafana "Failed tasks" panel. Airflow 3.0 removed SLA feature — used `execution_timeout` instead of `sla=`.
-   - **3.4 Verification: COMPLETE** ✅ — Broke pipeline 3 ways: (1) stopped producer → Grafana freshness panel red at 1195s > 900s threshold; (2) injected bad crime row (lat=45, lon=-100) → 2 DBT bounds tests failed → Grafana DBT panel red (failing=2); (3) throwaway DAG with `exit 1` → 4 attempts (1+3 retries) → on_failure_callback logged → Grafana failed-tasks panel red. Pipeline restored after each test. Phase 3 gate MET.
-   - Requires: Phase 2 complete (streaming pipeline works end-to-end) ✅ met
-   - **Data scope note:** Crime data is 2023 only (263K rows, scoped for local Postgres). Divvy is 2026 live only. No temporal overlap — the driving question (crime vs ridership) can't be answered until Phase 4. Do NOT backfill more years now — local Postgres isn't the right home for 8M rows. Backfilling is a Phase 4 concern (BigQuery handles scale trivially). The real fix for the driving question is ingesting Divvy trip history from the Chicago Data Portal (separate from GBFS) — that has years of data to correlate with crime. Deferred to Phase 4.
-   - **WSL space constraint:** User reports WSL already using ~40GB. This is a driver for Phase 4 (move heavy data to BigQuery, keep WSL for code + orchestration only). Do not add large datasets to local Postgres.
-2. **Phase 4: Cloud** — Terraform → BigQuery + Airbyte
-   - Requires: Phase 3 complete (observability in place before migrating to cloud)
-   - New: Terraform infrastructure, BigQuery warehouse, Airbyte ingestion
-   - **Why now:** WSL space constraint (~40GB used) + need for full crime history (8M rows) + Divvy trip history for the driving question. BigQuery free tier handles this trivially; local Postgres doesn't.
-3. **Phase 5: CI/CD** — GitHub Actions + GHCR
-   - Requires: Phase 4 complete
+1. **Phase 5: CI/CD** — GitHub Actions + GHCR
+   - Requires: Phase 4 complete ✅ met
    - New: Branch protection (dev/prod), PR checks (ruff + dbt parse + compose validate), versioned releases (semantic versioning), image push to GHCR
+   - Plan in `chicago-pipeline-plan.md` (sections 5.1–5.6)
    - **Future task (after Phase 5):** Generate 50–100 interview questions covering the full pipeline — architecture decisions, error debugging, tool tradeoffs, production readiness. User must be able to answer all from memory.
    - **Future task (after Phase 5):** Comprehensive documentation restructuring — reorganize all docs for portfolio readability, consolidate redundant content, ensure consistent formatting across changelog/operations/phases/knowledge. Discuss approach when we get there.
-   - Plan added to `chicago-pipeline-plan.md` (sections 5.1–5.6)
 
-- **Phase gates:** Phase 1 COMPLETE. Phase 2 COMPLETE (2.1–2.6 done). Phase 3 COMPLETE (3.1 Grafana, 3.2 DBT tests, 3.3 Airflow robustness, 3.4 Verification — all done). Phase 4 NEXT (cloud). Phase 5 locked. Do NOT skip ahead.
+- **Phase gates:** Phase 1 COMPLETE. Phase 2 COMPLETE (2.1–2.6). Phase 3 COMPLETE (3.1–3.4). Phase 4 COMPLETE (4.1–4.4 — driving question answered). Phase 5 NEXT (CI/CD). Do NOT skip ahead.
 - **Learning protocol:** Socratic by default. User must say "write the code" to get code. Currently in AI-writes-code mode.
 - **Three-doc system:** `changelog.md` (errors), `docs/knowledge/` (reference, one file per topic), `docs/operations-performed.md` (audit trail). Update all three after every change.
 - **Phase-completion docs:** After each sub-phase is verified, create `docs/phases/phase-X.Y-<name>.md` from `TEMPLATE.md`. Include one high-level mermaid diagram + pointer to `docs/knowledge/architecture.md` for details.
@@ -431,42 +418,24 @@ Use Airbyte to ingest Divvy trip history from S3 into BigQuery. Then update `dim
 
 ---
 
-## Next Session — Phase 4 (Cloud)
+## Next Session — Phase 5 (CI/CD)
 
-**Goal:** Move to cloud (Terraform → BigQuery + GCS + Airbyte) AND answer the driving question (crime vs ridership) using full historical data + partitioning/clustering + correlation analysis + (stretch) BigQuery ML. See `chicago-pipeline-plan.md` sections 4.1–4.9.
+**Goal:** Set up GitHub Actions CI/CD — branch protection, PR checks (ruff + dbt parse + compose validate), versioned releases, image push to GHCR. See `chicago-pipeline-plan.md` sections 5.1–5.6.
 
-### Before starting Phase 4
-1. **Commit current work** — Phase 3.3 + 3.4 + all doc updates (README, changelog, operations, knowledge, phase docs). User commits manually.
-2. **Read `chicago-pipeline-plan.md` sections 4.1–4.9** — BigQuery choice, Terraform, architecture change, partitioning/clustering, full history ingestion, analytics mart, BigQuery ML (stretch), Phase 4 gate.
+### Before starting Phase 5
+1. **Commit current work** — Phase 4.4 + all doc updates. User commits manually.
+2. **Read `chicago-pipeline-plan.md` sections 5.1–5.6** — CI/CD plan.
 3. **Prerequisites to confirm:**
-   - Google Cloud account + project created
-   - `gcloud` CLI installed + authenticated (`gcloud auth login`)
-   - Terraform installed (`terraform version`)
-   - BigQuery API enabled on the GCP project
-   - Billing enabled (BigQuery free tier needs billing account linked, even though cost = $0)
+   - GitHub repo created and code pushed
+   - GitHub Actions enabled
+   - GHCR (GitHub Container Registry) access
 
-### Phase 4 sub-phases (from plan)
-- **4.1 Choose a warehouse** — BigQuery (recommended: free tier, serverless, DBT first-class). Decision likely already made.
-- **4.2 Terraform** — `terraform/main.tf` provisions BigQuery datasets (raw, mart) + GCS bucket (data lake). Local backend first, migrate to GCS backend later.
-- **4.3 Architecture change** — Spark writes to GCS (Parquet) instead of Postgres. Airbyte replaces `download_crime.py`. DBT `profiles.yml` switches Postgres → BigQuery. Streaming path can stay on Postgres or move to BigQuery via `foreachBatch` → GCS → BigQuery load job.
-- **4.4 (old 4.4 verification — folded into 4.9)**
-- **4.5 Partitioning & clustering** — DBT config: `partition_by` on date, `cluster_by` on filter columns. Materialize as `table`. Verify partition pruning reduces bytes scanned. This is the "performance tuning that matters" bullet.
-- **4.6 Ingest full history** — Crime: reference `bigquery-public-data.chicago_crime` directly (2001-present, ~8M rows, NO ingestion needed). Divvy trips: NOT in BigQuery public datasets — ingest from S3 (`divvy-tripdata.s3.amazonaws.com`, monthly CSVs, ~50M rows) via Airbyte (sample) + `bq load` (full). See `docs/knowledge/data-sources.md` "Phase 4 Data Sources" section.
-- **4.7 Analytics mart — answer the driving question** — `fact_station_day` (station × day × trip_count × crime_count_within_quarter_mile). Geospatial join via `ST_DISTANCE` ≤ 402m. `crime_ridership_correlation` mart with `CORR(...)`. Grafana scatter plot + correlation gauge. README "Findings" section with actual coefficient.
-- **4.8 BigQuery ML (stretch)** — `CREATE MODEL mart.crime_ridership_model OPTIONS(model_type='linear_reg')`. `ML.EVALUATE`, `ML.WEIGHTS`, `ML.PREDICT`. Only if 4.5–4.7 go smoothly.
-- **4.9 Verification** — terraform apply/destroy, crime sourced, Divvy ingested, partitioned marts, pruning verified, `fact_station_day` built, correlation coefficient produced, README Findings written, (stretch) BQ ML trained. **The driving question is answered.**
+### Phase 4 is COMPLETE — driving question answered
+- Overall Pearson correlation = +0.20 (weak positive — both crime and ridership are higher in busy areas)
+- 34.8M Divvy trips ingested, 8.6M crime rows from public dataset, 1.5M station-day rows in analytics mart
+- 67/67 DBT tests pass, partition pruning verified (97.8% bytes saved)
+- Grafana scatter plot + correlation gauge live
 
-### Key decisions for Phase 4
-- **Keep local Postgres for streaming?** The plan says streaming "can stay on Postgres." Decide whether to migrate streaming to BigQuery or keep it local. GBFS live data is small (~2K rows/run) — Postgres is fine. BigQuery streaming inserts have cost implications.
-- **Divvy trip history (the driving question):** NOT in BigQuery public datasets (verified 2026-07-20 — `bigquery-public-data.chicago_divvy_trips` does NOT exist). Raw data is monthly CSVs on AWS S3 (`divvy-tripdata.s3.amazonaws.com`). Ingest via Airbyte (sample) + `bq load` (full). Crime history IS available as `bigquery-public-data.chicago_crime` (reference directly, no ingestion). See `docs/knowledge/data-sources.md` Phase 4 section.
-- **DBT profiles.yml:** Currently has hardcoded Postgres password (in `.gitignore`). For Phase 4, use env vars or secrets manager.
-- **Grafana:** Can connect to BigQuery directly, or keep a Postgres mirror for dashboards. BigQuery queries have latency (~1-2s) vs Postgres (~100ms) — may affect dashboard refresh.
-
-### What stays the same
-- Airflow orchestration (DAGs, tasks, retries, callbacks)
-- DBT models (staging + marts) — just switch the adapter
-- Grafana dashboards (panels + queries may need tweaking for BigQuery SQL dialect)
-- Kafka + Spark streaming (if kept on local Postgres)
-
-### WSL space note
-User reports WSL using ~40GB. Phase 4 moves heavy data to BigQuery — WSL stays for code + orchestration only. Do not add large datasets to local Postgres.
+### Stretch goals (not in plan, optional)
+- BigQuery ML: `CREATE MODEL mart.crime_ridership_model OPTIONS(model_type='linear_reg')` — predict ridership from crime count + temporal features
+- Control for confounding variables (population density, day of week, seasonality) in correlation analysis

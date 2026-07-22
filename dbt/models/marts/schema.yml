@@ -2,7 +2,7 @@ version: 2
 
 models:
   - name: dim_date
-    description: "Date dimension spanning crime dates (Phase 4.3). Will span crime + Divvy trip dates after Phase 4.6."
+    description: "Date dimension spanning crime (2018-present) + Divvy trip (2020-present) dates. Phase 4.4."
     columns:
       - name: date_key
         description: "Date (no time) — PK for date dimension"
@@ -13,8 +13,8 @@ models:
         tests:
           - not_null
           - dbt_expectations.expect_column_values_to_be_between:
-              min_value: 2023
-              max_value: 2023
+              min_value: 2018
+              max_value: 2026
       - name: month
         tests:
           - not_null
@@ -145,3 +145,98 @@ models:
           - dbt_expectations.expect_column_values_to_be_between:
               min_value: 0
               max_value: 100
+
+
+  - name: fact_divvy_trips
+    description: "Divvy trip fact table. One row per trip. Partitioned by started_at, clustered by start_station_id. Phase 4.4."
+    columns:
+      - name: ride_id
+        description: "Primary key — unique ride identifier"
+        tests:
+          - not_null
+      - name: started_at
+        description: "Trip start timestamp. Partition column."
+        tests:
+          - not_null
+      - name: date_key
+        description: "FK to dim_date (date portion of started_at)"
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_date')
+              field: date_key
+      - name: start_station_id
+        description: "Start station ID. Cluster column. Can be null for dockless ebikes."
+      - name: rideable_type
+        description: "Bike type: classic_bike, electric_bike, etc."
+      - name: trip_duration_seconds
+        description: "Trip duration in seconds. Derived: ended_at - started_at."
+
+  - name: dim_stations
+    description: "Divvy station dimension extracted from trip data. One row per station with coordinates. Phase 4.4."
+    columns:
+      - name: station_id
+        description: "Station ID (string — mixed UUID + numeric). PK."
+        tests:
+          - unique
+          - not_null
+      - name: station_name
+        description: "Human-readable station name."
+        tests:
+          - not_null
+      - name: lat
+        description: "Station latitude."
+        tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 41.0
+              max_value: 42.5
+      - name: lng
+        description: "Station longitude."
+        tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: -88.5
+              max_value: -87.0
+
+  - name: fact_station_day
+    description: "THE analytics mart. One row per station per day: trip_count + crime_count_within_quarter_mile. Geospatial join: crimes within 402m (0.25 mile) of station on same day. Phase 4.4."
+    columns:
+      - name: station_id
+        description: "FK to dim_stations. Part of grain (station + date)."
+        tests:
+          - not_null
+      - name: date_key
+        description: "FK to dim_date. Part of grain. Partition column."
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_date')
+              field: date_key
+      - name: trip_count
+        description: "Number of Divvy trips starting at this station on this day."
+        tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+              max_value: 10000
+      - name: crime_count_within_quarter_mile
+        description: "Number of crimes within 0.25 mile (402m) of this station on this day."
+        tests:
+          - not_null
+
+  - name: crime_ridership_correlation
+    description: "CORR(trip_count, crime_count_within_quarter_mile) at overall, per-station, and per-month scope. Answers the driving question. Phase 4.4."
+    columns:
+      - name: scope
+        description: "Correlation scope: overall, per_station, or per_month."
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['overall', 'per_station', 'per_month']
+      - name: correlation_coefficient
+        description: "Pearson correlation coefficient between trip_count and crime_count. Range: -1 to 1."
+      - name: observation_count
+        description: "Number of station-day observations used in the correlation."
+        tests:
+          - not_null

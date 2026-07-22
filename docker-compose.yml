@@ -497,6 +497,12 @@ services:
       # (Airflow panels query dag_run + task_instance in airflow_metadata).
       AIRFLOW_DB_USER: ${AIRFLOW_DB_USER}
       AIRFLOW_DB_PASSWORD: ${AIRFLOW_DB_PASSWORD}
+      # Phase 4.4 — BigQuery plugin installation
+      # grafana-bigquery-datasource is the official Grafana BigQuery plugin.
+      # Installed at startup via Grafana's plugin provisioning system.
+      GF_INSTALL_PLUGINS: grafana-bigquery-datasource
+      # GCP project ID — used by the BigQuery datasource provisioning
+      GCP_PROJECT_ID: ${GCP_PROJECT_ID:-chicago-divvy-pipeline}
     ports:
       # Grafana UI — http://localhost:3000
       - "3000:3000"
@@ -507,6 +513,8 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning
       # Dashboard JSON files — referenced by provisioning/dashboards.yml
       - ./grafana/dashboards:/var/lib/grafana/dashboards
+      # Phase 4.4 — GCP credentials for BigQuery datasource (read-only)
+      - ${GCP_CREDENTIALS_PATH:-~/chicago-divvy-pipeline-credentials.json}:/opt/grafana/gcp-credentials.json:ro
     healthcheck:
       # Grafana exposes /api/health — returns 200 when ready
       test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/api/health || exit 1"]

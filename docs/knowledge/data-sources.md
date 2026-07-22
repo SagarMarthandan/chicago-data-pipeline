@@ -163,12 +163,13 @@
 
 - **Verified:** `bigquery-public-data.chicago_divvy_trips` does NOT exist (checked 2026-07-20 via web search of BigQuery public dataset catalog)
 - **Common wrong assumption:** Many tutorials/case studies (e.g. Google Data Analytics Cert "Cyclistic") assume this exists. It doesn't.
-- **Actual source:** AWS S3 bucket `https://divvy-tripdata.s3.amazonaws.com/index.html` — monthly CSV files, 2013-present (~50M rows total)
-- **Ingestion required:** Must load into BigQuery yourself
-  - **Path A (Airbyte):** S3 source connector → BigQuery destination. Shows ingestion skill. Slower for 50M rows.
-  - **Path B (`bq load`):** `gsutil cp` from S3 → GCS → `bq load` into BigQuery. Faster, less skill shown.
-  - **Recommended hybrid:** Airbyte for 1-month sample (skill demo), `bq load` for full history (pragmatic)
-- **Schema:** `ride_id`, `rideable_type`, `started_at`, `ended_at`, `start_station_name`, `start_station_id`, `end_station_name`, `end_station_id`, `start_lat`, `start_lng`, `end_lat`, `end_lng`, `member_casual` (schema evolved over years — older files differ)
+- **Actual source:** AWS S3 bucket `https://divvy-tripdata.s3.amazonaws.com/index.html` — monthly CSV ZIP files, 2020-present (~35M rows total)
+- **Ingestion:** Loaded via **dlt** (data load tool) — see `ingestion/load_divvy_trips.py` and `docs/knowledge/dlt.md`
+  - dlt reads S3 ZIP → extracts CSV → streams rows to BigQuery `raw.divvy_trips` (append mode)
+  - CLI: `--month YYYYMM`, `--from/--to YYYYMM`, `--all`, `--dry-run`
+  - 34,751,413 rows across 75 months (2020-04 to 2026-06) loaded in Phase 4.4
+- **Schema (consistent 2020+):** `ride_id`, `rideable_type`, `started_at`, `ended_at`, `start_station_name`, `start_station_id`, `end_station_name`, `end_station_id`, `start_lat`, `start_lng`, `end_lat`, `end_lng`, `member_casual`
+- **Data quality issues found:** 1 row with Montreal coordinates (lat 45.6, lon -73.8) — filtered in `stg_divvy_trips`
 
 #### Other Chicago Public Datasets in BigQuery (for reference)
 

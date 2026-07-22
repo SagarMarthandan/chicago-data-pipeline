@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Phase 3.1 — Crime + Divvy analysis: crime by community area, crime type breakdown, station availability, and the driving question (crime vs ridership proxy).",
+  "description": "Phase 3.1 + 4.4 — Crime + Divvy analysis: crime by community area, crime type breakdown, station availability, crime heatmap, and the driving question (crime vs ridership correlation via BigQuery geospatial join).",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
@@ -564,11 +564,179 @@
       ],
       "title": "Crime heatmap (day of week × hour of day)",
       "type": "heatmap"
+    },
+    {
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "bigquery-analytics"
+      },
+      "description": "Scatter plot: trips per station-day vs crimes within 0.25 mile. Each point is one station on one day. The cluster shape reveals whether more crime correlates with more or fewer rides. Phase 4.4 — answers the driving question.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "continuous-GrYlRd"
+          },
+          "custom": {
+            "drawStyle": "points",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "showPoints": "always",
+            "pointSize": 3,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 16,
+        "x": 0,
+        "y": 48
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-bigquery-datasource",
+            "uid": "bigquery-analytics"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT trip_count, crime_count_within_quarter_mile FROM mart.fact_station_day WHERE date_key >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY) ORDER BY trip_count DESC LIMIT 5000",
+          "refId": "A"
+        }
+      ],
+      "title": "Crime vs Ridership (station-day scatter, last 30 days)",
+      "type": "xychart"
+    },
+    {
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "bigquery-analytics"
+      },
+      "description": "Overall Pearson correlation coefficient between trip count and crime count within 0.25 mile. Range: -1 (strong negative) to +1 (strong positive). Near 0 = no linear relationship. Phase 4.4.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "max": 1,
+          "min": -1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": -0.3
+              },
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "yellow",
+                "value": 0.3
+              },
+              {
+                "color": "red",
+                "value": 0.7
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 8,
+        "x": 16,
+        "y": 48
+      },
+      "id": 8,
+      "options": {
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showThresholdLabels": true,
+        "showThresholdMarkers": true,
+        "gauge": {
+          "minSpacing": 10
+        }
+      },
+      "pluginVersion": "12.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-bigquery-datasource",
+            "uid": "bigquery-analytics"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT correlation_coefficient FROM mart.crime_ridership_correlation WHERE scope = 'overall'",
+          "refId": "A"
+        }
+      ],
+      "title": "Overall correlation coefficient",
+      "type": "gauge"
     }
   ],
   "refresh": "1m",
   "schemaVersion": 39,
-  "tags": ["phase-3", "analysis", "crime-divvy"],
+  "tags": ["phase-3", "phase-4", "analysis", "crime-divvy"],
   "templating": {
     "list": []
   },
