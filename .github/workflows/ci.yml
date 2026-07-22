@@ -1,0 +1,49 @@
+# CI Checks — runs on every pull request to dev or prod
+#
+# Four parallel jobs:
+#   1. lint            — ruff checks Python (syntax, imports, style)
+#   2. validate-dbt    — dbt parse checks SQL models (refs, Jinja, structure)
+#   3. validate-compose — docker compose config validates docker-compose.yml
+#   4. build-images    — docker compose build verifies all Dockerfiles build
+#
+# No secrets needed. dbt parse doesn't connect to BigQuery — it uses a
+# CI-safe profiles.yml (.github/ci/profiles.yml) with a dummy keyfile.
+# dbt_packages/ is committed to git, so `dbt deps` is not needed.
+
+name: CI Checks
+
+on:
+  pull_request:
+    branches: [dev, prod]
+
+jobs:
+  lint:
+    name: Ruff lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install ruff
+      - run: ruff check airflow/ spark/ kafka/ ingestion/
+
+  validate-dbt:
+    name: DBT parse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install dbt-bigquery==1.12.0
+      - working-directory: dbt
+        run: dbt parse --profiles-dir ../.github/ci
+
+  validate-compose:
+    name: Compose validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose config -q
+
+  build-images:
+    name: Build Docker images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose build airflow-init spark-master dbt-build

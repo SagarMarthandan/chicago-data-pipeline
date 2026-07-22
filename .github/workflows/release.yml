@@ -1,0 +1,93 @@
+# Release — runs when a PR is merged from dev to prod (push to prod)
+#
+# 1. Determines the next semantic version (default: minor bump)
+#    - Put [major] in a commit message to bump major version
+#    - Put [patch] in a commit message to bump patch version
+#    - Legacy non-semantic tags (v1, v2, ... v27) are treated as v1.0.0
+# 2. Tags the merge commit and pushes the tag
+# 3. Builds + pushes versioned images to GHCR
+# 4. Creates a GitHub Release with auto-generated changelog
+#
+# No manually-configured secrets needed — GITHUB_TOKEN is auto-provided.
+# `permissions: contents: write` grants tag push + release creation.
+# `permissions: packages: write` grants GHCR push.
+
+name: Release
+
+on:
+  push:
+    branches: [prod]
+
+jobs:
+  tag-and-release:
+    name: Tag, build, and release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history needed for git describe + changelog
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Determine next version
+        id: version
+        run: |
+          LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v1.0.0")
+          # Handle legacy non-semantic tags (v1, v2, ... v27) — treat as v1.0.0
+          # and scan ALL commits (HEAD) since the legacy tag doesn't follow
+          # semantic versioning and v1.0.0 doesn't exist as a real tag.
+          if ! echo "$LATEST" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            LATEST="v1.0.0"
+            RANGE="HEAD"
+          else
+            RANGE="$LATEST..HEAD"
+          fi
+          echo "Latest tag: $LATEST (range: $RANGE)"
+          if git log --format=%B $RANGE | grep -q "\[major\]"; then
+            NEXT=$(echo $LATEST | awk -F. '{print "v"($1+1)".0.0"}')
+          elif git log --format=%B $RANGE | grep -q "\[patch\]"; then
+            NEXT=$(echo $LATEST | awk -F. '{print $1"."$2"."($3+1)}')
+          else
+            NEXT=$(echo $LATEST | awk -F. '{print $1"."($2+1)".0"}')
+          fi
+          echo "Next version: $NEXT"
+          echo "version=$NEXT" >> $GITHUB_OUTPUT
+
+      - name: Tag the merge commit
+        run: |
+          git tag ${{ steps.version.outputs.version }}
+          git push origin ${{ steps.version.outputs.version }}
+
+      - name: Lowercase repo name for GHCR
+        run: echo "REPO_LC=$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build images
+        run: docker compose build airflow-init spark-master dbt-build
+
+      - name: Tag and push versioned images
+        run: |
+          V=${{ steps.version.outputs.version }}
+          docker tag chicago-data-pipeline-airflow-init ghcr.io/${{ env.REPO_LC }}/airflow:$V
+          docker tag chicago-data-pipeline-spark-master ghcr.io/${{ env.REPO_LC }}/spark:$V
+          docker tag chicago-data-pipeline-dbt:latest ghcr.io/${{ env.REPO_LC }}/dbt:$V
+          docker push ghcr.io/${{ env.REPO_LC }}/airflow:$V
+          docker push ghcr.io/${{ env.REPO_LC }}/spark:$V
+          docker push ghcr.io/${{ env.REPO_LC }}/dbt:$V
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          generate_release_notes: true

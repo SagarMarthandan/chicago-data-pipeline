@@ -115,7 +115,7 @@ with DAG(
     # 3. Record dbt test results into Postgres for Grafana observability
     record_dbt_results = BashOperator(
         task_id="record_dbt_results",
-        bash_command=f"python /opt/airflow/scripts/record_dbt_results.py",
+        bash_command="python /opt/airflow/scripts/record_dbt_results.py",
     )
 
     # Task dependencies

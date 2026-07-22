@@ -39,10 +39,10 @@ Environment variables (set in docker-compose.yml):
 import argparse
 import io
 import os
-import sys
+
 import tempfile
 import zipfile
-from datetime import datetime
+
 from urllib.request import urlopen
 
 import dlt

@@ -41,6 +41,7 @@ A running log of changes, errors, and fixes throughout the project. Use this to 
 - [2026-07-22 — Phase 4.8: BigQuery ML (stretch goal)](#2026-07-22--phase-48-bigquery-ml-stretch-goal)
 - [2026-07-22 — Data Inventory Verification](#2026-07-22--data-inventory-verification)
 - [2026-07-22 — dbt docs generate + serve](#2026-07-22--dbt-docs-generate--serve)
+- [2026-07-22 — Phase 5: CI/CD GitHub Actions workflows](#2026-07-22--phase-5-cicd-github-actions-workflows)
 
 ---
 
@@ -976,3 +977,35 @@ No errors encountered. All 59 DBT tests passed on first run.
 - **dbt docs port conflict** — `dbt docs serve` defaults to port 8080, which conflicts with Airflow webserver. Use `--port 8090` (or any free port).
 - **`--host 0.0.0.0` required in Docker** — without it, dbt docs serve binds to localhost inside the container and is unreachable from the host.
 - **`dbt docs generate` needs warehouse access** — it introspects the warehouse (INFORMATION_SCHEMA) to build catalog.json. Unlike `dbt compile`, it can't run offline.
+
+---
+
+## 2026-07-22 — Phase 5: CI/CD GitHub Actions workflows
+
+### Changes
+- Created `.github/workflows/ci.yml` — 4 parallel jobs: ruff lint, dbt parse, compose validate, build images. Triggers on PR to dev/prod.
+- Created `.github/workflows/build.yml` — builds + pushes images to GHCR tagged `:dev`. Triggers on push to dev.
+- Created `.github/workflows/release.yml` — semantic version tag + GitHub Release + versioned GHCR images. Triggers on push to prod.
+- Created `.github/ci/profiles.yml` — CI-safe dbt profiles (dummy keyfile, never connects). Needed because `dbt/profiles.yml` is gitignored.
+- Added `[tool.ruff]` config to `pyproject.toml` — line-length 100, excludes `dbt/dbt_packages`.
+- Fixed 5 ruff lint errors in existing code: 3x f-string without placeholders (crime_batch_dag, divvy_trip_history_dag, divvy_stream), 2x unused imports (load_divvy_trips: `sys`, `datetime`).
+
+### Errors & Fixes
+
+| # | Error | Root Cause | Fix |
+|---|---|---|---|
+| 1 | Plan's CI used `pip install dbt-postgres` but project uses dbt-bigquery | Phase 4.3 switched from Postgres to BigQuery — plan template was stale | Changed to `pip install dbt-bigquery==1.12.0` in ci.yml |
+| 2 | `dbt parse` would fail in CI — `dbt/profiles.yml` is gitignored | profiles.yml contains the real GCP key path, can't be committed | Created `.github/ci/profiles.yml` with dummy keyfile (`/dev/null`). dbt parse never connects, just needs adapter type to match. |
+| 3 | GHCR push would fail — `github.repository` has uppercase (`SagarMarthandan`) | GHCR requires lowercase image paths | Added `REPO_LC` env var that lowercases `github.repository` via `tr '[:upper:]' '[:lower:]'` |
+| 4 | Release workflow: `git log v1.0.0..HEAD` fails — v1.0.0 doesn't exist as a real tag | Legacy tags (v1–v27) are non-semantic; resetting LATEST to v1.0.0 creates a non-existent range | Added `RANGE` variable: `HEAD` for legacy tags, `$LATEST..HEAD` for semantic tags |
+| 5 | Plan's build.yml used `--build-arg BUILD_DATE/GIT_SHA/VERSION` | Dockerfiles have no corresponding `ARG` declarations | Removed build args — images build fine without them |
+| 6 | Plan's build.yml tagged `chicago-data-pipeline-dbt-build` | Compose uses `image: chicago-data-pipeline-dbt:latest` (via `image:` key in dbt-build service) | Used correct image name `chicago-data-pipeline-dbt:latest` |
+| 7 | ruff found 5 lint errors in existing code | F-strings without placeholders (F541) + unused imports (F401) | Fixed all 5: removed `f` prefix from 3 strings, removed `sys` + `datetime` imports |
+| 8 | `softprops/action-gh-release@v1` is deprecated | v1 uses old Node 16 runtime | Upgraded to `@v2` |
+
+### Lessons Summary
+- **Plan templates go stale** — the Phase 5 plan was written before Phase 4.3's BigQuery switch. Always verify plan assumptions against current code before implementing.
+- **dbt parse doesn't need real credentials** — it only parses SQL/Jinja, never opens a DB connection. A CI-safe profiles.yml with a dummy keyfile is sufficient.
+- **GHCR requires lowercase** — `github.repository` preserves case from the GitHub URL. Always lowercase it for GHCR image paths.
+- **Legacy tags break semantic versioning logic** — `git describe` returns the latest tag regardless of format. Non-semantic tags (v1, v27) need special handling in version bump logic.
+- **ruff catches real issues** — 3 f-strings without placeholders and 2 unused imports were sitting in production code. CI linting would have caught these on the first PR.

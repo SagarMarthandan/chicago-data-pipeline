@@ -179,7 +179,7 @@ def main():
     spark.sparkContext.setLogLevel("WARN")
 
     print("=" * 60)
-    print(f"Divvy Station Status — Spark Structured Streaming")
+    print("Divvy Station Status — Spark Structured Streaming")
     print(f"  Kafka bootstrap:  {args.bootstrap}")
     print(f"  Kafka topic:      {KAFKA_TOPIC}")
     print(f"  Postgres table:   {POSTGRES_TABLE}")

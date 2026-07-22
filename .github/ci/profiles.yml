@@ -1,0 +1,23 @@
+# CI-safe DBT Profiles — used by GitHub Actions for `dbt parse`
+#
+# This file IS committed to git (unlike dbt/profiles.yml which is gitignored
+# because it contains the real GCP service account key path).
+#
+# `dbt parse` only parses SQL/Jinja and validates project structure — it
+# never opens a database connection. The keyfile path below is never read.
+# We use /dev/null as a safe placeholder.
+#
+# The adapter type (bigquery) MUST match the project's real profiles.yml
+# so dbt loads the correct adapter (dbt-bigquery) to parse BigQuery SQL.
+
+chicago_crime:
+  target: dev
+  outputs:
+    dev:
+      type: bigquery
+      method: service-account
+      project: chicago-divvy-pipeline
+      dataset: staging
+      threads: 4
+      keyfile: /dev/null
+      location: US

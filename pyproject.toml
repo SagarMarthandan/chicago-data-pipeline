@@ -11,3 +11,7 @@ dependencies = [
     "requests>=2.34.2",
     "sodapy>=2.2.0",
 ]
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["dbt/dbt_packages", ".venv", "dbt/target"]

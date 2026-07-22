@@ -1223,3 +1223,34 @@ docker run --rm --network chicago-data-pipeline_default --volumes-from chicago-d
 - `curl http://localhost:8090/` → HTTP 200 ✅
 - Catalog contains 15 nodes including all BQML models ✅
 - `RuntimeWarning: "table_owner" does not match` — harmless (BigQuery has no table owners) ✅
+
+## 2026-07-22 — Phase 5: CI/CD GitHub Actions workflows
+
+### What was built
+Three GitHub Actions workflows + CI-safe dbt profiles + ruff config. No changes to existing pipeline code (pure DevOps layer).
+
+### Files created
+- `.github/workflows/ci.yml` — PR checks: 4 parallel jobs (ruff lint, dbt parse, compose validate, build images). Triggers on `pull_request` to `dev` or `prod`.
+- `.github/workflows/build.yml` — Build + push images to GHCR tagged `:dev`. Triggers on `push` to `dev`.
+- `.github/workflows/release.yml` — Semantic version tag + GitHub Release + versioned GHCR images. Triggers on `push` to `prod`. Handles legacy non-semantic tags (v1–v27).
+- `.github/ci/profiles.yml` — CI-safe dbt profiles with dummy keyfile (`/dev/null`). dbt parse never connects to BigQuery; only needs adapter type to load.
+
+### Files modified
+- `pyproject.toml` — added `[tool.ruff]` config (line-length 100, excludes `dbt/dbt_packages`, `.venv`, `dbt/target`).
+- `airflow/dags/crime_batch_dag.py` — fixed f-string without placeholders (F541).
+- `airflow/dags/divvy_trip_history_dag.py` — fixed f-string without placeholders (F541).
+- `spark/jobs/divvy_stream.py` — fixed f-string without placeholders (F541).
+- `ingestion/load_divvy_trips.py` — removed unused imports `sys` and `datetime` (F401).
+
+### Key decisions
+- **dbt-bigquery not dbt-postgres** in CI — project switched to BigQuery in Phase 4.3; plan template was stale.
+- **CI-safe profiles.yml** — `dbt/profiles.yml` is gitignored (contains GCP key path). Created `.github/ci/profiles.yml` with dummy keyfile so `dbt parse` can load the BigQuery adapter without real credentials.
+- **GHCR lowercase** — `github.repository` preserves case (`SagarMarthandan`); GHCR requires lowercase. Added `REPO_LC` env var.
+- **Legacy tag handling** — repo has v1–v27 (non-semantic). Release workflow detects non-semantic tags and uses `HEAD` as the git log range instead of `$LATEST..HEAD` (which would fail on non-existent v1.0.0).
+- **No manually-configured secrets** — `GITHUB_TOKEN` is auto-provided by GitHub Actions. `permissions: packages: write` + `permissions: contents: write` grant all needed access.
+- **`softprops/action-gh-release@v2`** — plan used v1 (deprecated, Node 16). Upgraded to v2.
+
+### Verification (local — same checks CI runs)
+- `docker compose config -q` → exit 0 ✅
+- `dbt parse --profiles-dir ../.github/ci` → exit 0 ✅ (28 deprecation warnings from dbt_expectations test syntax, not errors)
+- `ruff check airflow/ spark/ kafka/ ingestion/` → All checks passed ✅ (after fixing 5 lint errors)
