@@ -1,6 +1,6 @@
 # Current State — Handoff Document
 
-> **Read this first in a new session.** This file is the handoff: current state, active decisions, and next steps. Last updated: 2026-07-22 (Phase 5 CI/CD workflows written — ready for branch setup + first PR).
+> **Read this first in a new session.** This file is the handoff: current state, active decisions, and next steps. Last updated: 2026-07-22 (Phase 5 CI/CD COMPLETE — all phases done, project complete).
 
 ---
 
@@ -9,8 +9,8 @@
 Chicago Crime + Divvy Bike-Share data engineering pipeline. A learning project that answers: *Does crime near a Divvy station affect ridership?*
 
 - **Repo:** `~/chicago-data-pipeline/` (WSL, Ubuntu on Windows 10)
-- **Git:** initialized, 27 commits on `main`, pushed to `github.com/SagarMarthandan/chicago-data-pipeline`. User commits manually. **Phase 5 requires renaming `main` → `prod` + creating `dev` branch.**
-- **Phase:** 1 COMPLETE. Phase 2 COMPLETE (2.1–2.6). Phase 3 COMPLETE (3.1–3.4). Phase 4 COMPLETE: 4.1 GCP setup ✅, 4.2 Terraform ✅, 4.3 Architecture change ✅, 4.4 Divvy trip history + correlation analysis ✅, 4.8 BigQuery ML (stretch) ✅. **The driving question is answered.** Phase 5 IN PROGRESS (CI/CD — workflows written, branch setup pending).
+- **Git:** 28+ commits, pushed to `github.com/SagarMarthandan/chicago-data-pipeline`. Branches: `prod` (default, protected) + `dev` (protected). `main` deleted. User commits manually.
+- **Phase:** 1 COMPLETE. Phase 2 COMPLETE (2.1–2.6). Phase 3 COMPLETE (3.1–3.4). Phase 4 COMPLETE (4.1–4.4 + stretch 4.8 BQML). Phase 5 COMPLETE (CI/CD — GitHub Actions + GHCR + branch protection). **ALL PHASES COMPLETE.**
 - **AI mode:** AI-writes-code (user said "you write it" — explicit mode switch from Socratic)
 
 ## Tech Stack
@@ -384,20 +384,18 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
 
 ## Next Steps
 
-1. **Phase 5: CI/CD** — IN PROGRESS (workflows written, branch setup pending)
+1. **Phase 5: CI/CD** — COMPLETE ✅
    - ✅ Workflows written: `ci.yml`, `build.yml`, `release.yml` + `.github/ci/profiles.yml` + ruff config
-   - ✅ Verified locally: compose config, dbt parse, ruff all pass
    - ✅ Fixed 5 ruff lint errors in existing code (3x f-string, 2x unused imports)
-   - ⬜ **USER ACTION:** Rename `main` → `prod`, create `dev` branch, push both, set `prod` as default in GitHub settings
-   - ⬜ **USER ACTION:** Commit the Phase 5 files + lint fixes
-   - ⬜ **USER ACTION:** Configure branch protection rules in GitHub Settings → Branches
-   - ⬜ Verify: first PR to `dev` triggers CI checks
-   - ⬜ Verify: merge to `dev` pushes images to GHCR
-   - ⬜ Verify: merge to `prod` creates tag + GitHub Release
-   - **Future task (after Phase 5):** Generate 50–100 interview questions covering the full pipeline — architecture decisions, error debugging, tool tradeoffs, production readiness. User must be able to answer all from memory.
-   - **Future task (after Phase 5):** Comprehensive documentation restructuring — reorganize all docs for portfolio readability, consolidate redundant content, ensure consistent formatting across changelog/operations/phases/knowledge. Discuss approach when we get there.
+   - ✅ Branches: `main` renamed → `prod` (default, protected), `dev` (protected), `main` deleted
+   - ✅ PR to `dev` triggers 4 CI checks (ruff, dbt parse, compose validate, build) — all passed
+   - ✅ Merge to `dev` pushes images to GHCR (`:dev` tags on airflow, spark, dbt packages)
+   - ✅ Push to `prod` creates semantic version tags + GitHub Releases (v1.1.0, v1.2.0)
+   - ✅ Direct push to `prod` rejected by branch protection (GH006)
+   - **Future task:** Generate 50–100 interview questions covering the full pipeline — architecture decisions, error debugging, tool tradeoffs, production readiness. User must be able to answer all from memory.
+   - **Future task:** Comprehensive documentation restructuring — reorganize all docs for portfolio readability, consolidate redundant content, ensure consistent formatting across changelog/operations/phases/knowledge. Discuss approach when we get there.
 
-- **Phase gates:** Phase 1 COMPLETE. Phase 2 COMPLETE (2.1–2.6). Phase 3 COMPLETE (3.1–3.4). Phase 4 COMPLETE (4.1–4.4 + stretch 4.8 BQML — driving question answered). Phase 5 IN PROGRESS (CI/CD — workflows written, branch setup pending). Do NOT skip ahead.
+- **Phase gates:** Phase 1 COMPLETE. Phase 2 COMPLETE (2.1–2.6). Phase 3 COMPLETE (3.1–3.4). Phase 4 COMPLETE (4.1–4.4 + stretch 4.8 BQML — driving question answered). Phase 5 COMPLETE (CI/CD — GitHub Actions + GHCR + branch protection). **ALL PHASES COMPLETE.**
 - **Learning protocol:** Socratic by default. User must say "write the code" to get code. Currently in AI-writes-code mode.
 - **Three-doc system:** `changelog.md` (errors), `docs/knowledge/` (reference, one file per topic), `docs/operations-performed.md` (audit trail). Update all three after every change.
 - **Phase-completion docs:** After each sub-phase is verified, create `docs/phases/phase-X.Y-<name>.md` from `TEMPLATE.md`. Include one high-level mermaid diagram + pointer to `docs/knowledge/architecture.md` for details.
@@ -470,51 +468,26 @@ Full end-to-end: `docker compose up` → Kafka → producer → Spark streaming 
 
 ---
 
-## Next Session — Phase 5 (CI/CD) continuation
+## Next Session — Project Complete (all phases done)
 
-**Goal:** Complete Phase 5 — branch setup, first PR, verify CI/CD end-to-end.
+**All 5 phases are COMPLETE.** The pipeline is built end-to-end:
+- Phase 1: Batch (Spark → Postgres → DBT → Airflow) ✅
+- Phase 2: Streaming (Kafka → Spark Structured Streaming → Postgres) ✅
+- Phase 3: Observability (Grafana + DBT tests + Airflow robustness) ✅
+- Phase 4: Cloud (Terraform → BigQuery + GCS, Divvy trip history, correlation analysis, BQML) ✅
+- Phase 5: CI/CD (GitHub Actions + GHCR + branch protection) ✅
 
-### What's done (this session)
-- ✅ Three GitHub Actions workflows written: `ci.yml` (PR checks), `build.yml` (dev→GHCR), `release.yml` (prod→tag+release+GHCR)
-- ✅ CI-safe dbt profiles: `.github/ci/profiles.yml` (dummy keyfile, never connects)
-- ✅ Ruff config added to `pyproject.toml`
-- ✅ 5 ruff lint errors fixed in existing code (3x F541 f-string, 2x F401 unused imports)
-- ✅ All 3 CI checks verified locally: compose config ✅, dbt parse ✅, ruff ✅
-- ✅ Docs updated: changelog, operations-performed, current-state.md
+### Phase 5 verification results (this session)
+- ✅ PR to `dev` triggers 4 CI checks (ruff, dbt parse, compose validate, build) — all passed
+- ✅ Merge to `dev` pushes images to GHCR (`:dev` tags on airflow, spark, dbt packages)
+- ✅ Push to `prod` creates semantic version tags + GitHub Releases (v1.1.0, v1.2.0)
+- ✅ Direct push to `prod` rejected by branch protection (GH006: Protected branch update failed)
+- ✅ Branches: `prod` (default, protected) + `dev` (protected), `main` deleted
 
-### What's pending (user actions)
-1. **Commit the Phase 5 files + lint fixes** — see suggested commit message below
-2. **Rename `main` → `prod` + create `dev` branch:**
-   ```bash
-   git branch -m main prod          # rename main → prod (local)
-   git push origin -u prod          # push prod to GitHub
-   git checkout -b dev prod         # create dev from prod
-   git push origin -u dev           # push dev to GitHub
-   ```
-3. **Set `prod` as default branch** in GitHub: Settings → Branches → Default branch → change to `prod`
-4. **Configure branch protection rules** in GitHub: Settings → Branches → Add rule
-   - `prod`: require PR, 1 approval, require status checks, no force push
-   - `dev`: require PR, 0 approvals (solo dev), require status checks, no force push
-5. **Create a feature branch, open a PR to `dev`** to verify CI checks trigger
-
-### Suggested commit message
-```
-v28 Phase 5: GitHub Actions CI/CD workflows + ruff lint fixes
-
-- .github/workflows/ci.yml — PR checks (ruff, dbt parse, compose validate, build)
-- .github/workflows/build.yml — dev push → build + push images to GHCR
-- .github/workflows/release.yml — prod push → semantic version tag + GitHub Release
-- .github/ci/profiles.yml — CI-safe dbt profiles (dummy keyfile for dbt parse)
-- pyproject.toml — added [tool.ruff] config
-- Fixed 5 ruff lint errors: 3x f-string without placeholders, 2x unused imports
-```
-
-### Phase 5 verification (after branch setup)
-- [ ] PR to `dev` triggers CI checks (ruff, dbt parse, compose validate, build)
-- [ ] Merge to `dev` pushes images to GHCR (`ghcr.io/sagarmarthandan/chicago-data-pipeline/{airflow,spark,dbt}:dev`)
-- [ ] Merge to `prod` creates git tag (v1.1.0) + GitHub Release with changelog
-- [ ] `docker compose pull` works from GHCR images
-- [ ] Direct push to `prod` is rejected by branch protection
+### What's left (optional, not phase-gated)
+1. **Generate 50–100 interview questions** covering the full pipeline — architecture decisions, error debugging, tool tradeoffs, production readiness. User must be able to answer all from memory.
+2. **Comprehensive documentation restructuring** — reorganize all docs for portfolio readability, consolidate redundant content, ensure consistent formatting across changelog/operations/phases/knowledge. Discuss approach when we get there.
+3. **Control for confounding variables** (population density, day of week, seasonality) in correlation analysis
 
 ### Phase 4 is COMPLETE — driving question answered
 - Overall Pearson correlation = +0.20 (weak positive — both crime and ridership are higher in busy areas)
@@ -527,4 +500,3 @@ v28 Phase 5: GitHub Actions CI/CD workflows + ruff lint fixes
 
 ### Stretch goals
 - ~~BigQuery ML: `CREATE MODEL mart.crime_ridership_model OPTIONS(model_type='linear_reg')` — predict ridership from crime count + temporal features~~ **DONE (Phase 4.8)** — crime coefficient +1.45, in-sample R²=0.434, confirms positive crime-ridership relationship
-- Control for confounding variables (population density, day of week, seasonality) in correlation analysis
